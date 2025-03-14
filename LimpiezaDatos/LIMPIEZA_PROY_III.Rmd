@@ -347,9 +347,32 @@ ggplot(df_plot, aes(x = Valor, fill = Estado)) +
 ```
 
 ```{r}
+library(mice)
+library(dplyr)
+
+set.seed(123)  # Asegurar reproducibilidad
+
+# 1️⃣ Aplicar imputación con MICE usando pmm
+mice_model <- mice(df, method = "pmm", m = 5, maxit = 50, seed = 123)
+
+# 2️⃣ Extraer el dataframe imputado
+df_imputed <- complete(mice_model)
+
+# 3️⃣ Redondear la variable madre_menarquia para que solo tenga valores enteros
+df_imputed$madre_menarquia <- round(df_imputed$madre_menarquia)
+
+# 4️⃣ Verificar si hay valores no enteros (debería ser todo entero)
+print(unique(df_imputed$madre_menarquia))
+
+# 5️⃣ Sobrescribir la variable imputada en el dataframe original (opcional)
+df$madre_menarquia <- df_imputed$madre_menarquia
+```
+
+
+```{r}
 library(writexl)
-write_xlsx(df, "datos_imputados_teentox.xlsx")
-print("El archivo 'datos_imputados_teentox.xlsx' ha sido guardado exitosamente.")
+write_xlsx(df, "Datos_Imputados_Teentox.xlsx")
+print("El archivo 'Datos_Imputados_Teentox.xlsx' ha sido guardado exitosamente.")
 
 ```
 
