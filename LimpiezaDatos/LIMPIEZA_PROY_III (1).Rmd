@@ -5,7 +5,7 @@ library(ggplot2)
 library(tidyr)
 library(VIM)
 
-df <- read_excel("datos_pregnancy.xlsx")
+df <- read_excel("Datos_Joaquin/datos_pregnancy5.xlsx")
 
 df <- df %>% filter((sexo == "niña"), !is.na(edad_menarquia))
 
@@ -386,8 +386,8 @@ df
 
 ```{r}
 library(writexl)
-write_xlsx(df, "datos_limpios_2.xlsx")
-print("El archivo 'datos_limpios_2.xlsx' ha sido guardado exitosamente.")
+write_xlsx(df, "Datos_Limpios/datos_limpios_5.xlsx")
+print("El archivo ha sido guardado exitosamente.")
 
 ```
 
