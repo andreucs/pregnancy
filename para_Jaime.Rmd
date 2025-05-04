@@ -1,0 +1,333 @@
+---
+title: "KPCA"
+output: html_notebook
+---
+
+
+```{r}
+
+library(pls)
+library(factoextra)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(FactoMineR)
+library(factoextra)
+library(gridExtra)
+library(Metrics)
+library(kernlab)
+library(mgcv)
+library(caTools)
+
+df_t <-  read_excel('Data/datos_limpios_2_log_transformado.xlsx')
+df_t <-  df_t %>% select (-c('pfhxs', 'pfoa', 'pfos', 'pfna', 'v_44DDT', 'v_44DDE', 'HCB', 'bHCH' , 'PCB'))
+head(df_t)
+```
+```{r}
+
+#Procesamos las variables binarias
+df_t[,'femb'] <- ifelse(df_t[,'femb'] == "Sí", 1, 0)
+df_t[, 'preterm'] <- ifelse(df_t[, 'preterm'] == "sí", 1, 0)
+df_t[, 'alcohol'] <- ifelse(df_t[, 'alcohol'] == "Si", 1, 0)
+
+
+# Crear dummies para cada categoría, será para el PCA
+dummies <- model.matrix(~ tipozona - 1, data = df_t)
+print (colnames(dummies))
+colnames(dummies) <- c("z_Rural", "z_Semiurbana", "z_Urbana")
+df_t <- cbind(df_t, dummies)
+
+#TRansformamos a numérica ordinal
+df_t$Clase_social <- as.numeric(factor(df_t$CSMIX3, levels = c("CS I+II", "CS III", "CS IV+V"), ordered = TRUE))
+
+#Seleccionamaos las variables de interés
+df_t <- df_t %>% select(-c('sexo', 'idnum', 'CSMIX3'))
+
+colnames(df_t) <- c( "femb", "preterm" , "madre_menarquia","imc" , "paridad" , "tipozona", "alcohol" ,  "edad_menarquia" ,"l_pfhxs", "l_pfoa", "l_pfos", "l_pfna"    ,"l_DDT","l_DDE", "l_HCB", "l_bHCH", "l_PCB", "z_Rural", "z_Semiurbana","z_Urbana","Clase_social")
+head(df_t)
+
+```
+
+# Kernel PCA entero (general)
+```{r}
+datos_c <- df_t %>% select(-c('tipozona'))
+datos_ae <- as.data.frame(scale(datos_c))
+datos_eb <- t(apply(datos_ae[-7], 1, function(x){
+    x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1 cada bloque
+apply(datos_eb, 2, var)
+
+datos_eb <- cbind(edad_menarquia = datos_c$edad_menarquia, as.data.frame(datos_eb))
+head(datos_eb)
+```
+
+```{r}
+library(kernlab)
+library(kpcaIG)
+datos_eb2 <- datos_eb[ , -1] #no tomamos la variable respuesta 
+
+#KPCA modeliza la varianza no lineal de los datos en un espacio de características, buscando componentes principales en ese espacio. Cada componente representa una dirección de máxima dispersión de los datos, considerando relaciones no lineales complejas entre las variables.
+
+# Kernel PCA directamente sobre los datos
+res.kpcak <- kpca(as.matrix(datos_eb2), 
+                 kernel = "rbfdot", 
+                 kpar = list(sigma = 0.1), 
+                 features = 18)
+
+pca_proj <- rotated(res.kpcak)
+head(pca_proj)
+```
+```{r}
+edad_menarquia <- datos_eb$edad_menarquia
+plot_kpca2D(res.kpcak, target_variable = NULL, groups = edad_menarquia, scale = 100,
+            components = c(1, 2), arrow_col = "#D3D3D3",
+            main_title = "Kernel principal component analysis",
+            point_size = 2, arrow_thickness = 0.5, text_size = 16,
+            legend_text_size = 11, axis_text_size = 12)
+```
+La varianza acumulada:
+
+```{r}
+eigenvalues <-  res.kpcak@eig
+explained_variance <- eigenvalues / sum(eigenvalues)
+print(explained_variance)
+cumulative_variance <- cumsum(explained_variance)
+
+#quiero hacer un grafico de barras con la varianza acumulada
+eigenvalues <- res.kpcak@eig
+explained_variance <- eigenvalues / sum(eigenvalues) * 100  # En porcentaje
+
+# Crear el gráfico de barras
+bp <- barplot(explained_variance,
+              names.arg = 1:length(explained_variance),
+              xlab = "Número de Componentes",
+              ylab = "Porcentaje de Varianza Explicada",
+              main = "Varianza Explicada por Componentes Principales",
+              col = "skyblue",
+              ylim = c(0, max(explained_variance) + 5),
+              border = NA)
+
+# Agregar etiquetas encima de cada barra
+text(x = bp, y = explained_variance, 
+     labels = paste0(round(explained_variance, 1), "%"), 
+     pos = 3, cex = 0.8)
+```
+
+
+
+# Kernel PCA con train y test
+## Escalado por bloques de los datos.
+```{r}
+
+set.seed(123)
+split <- sample.split(datos_c$edad_menarquia, SplitRatio = 0.7)
+train_n <- datos_c[split,]
+test_n <- datos_c[!split,]
+
+
+train_s <- scale(train_n[-7])
+train_ss <- t(apply(train_s, 1, function(x){
+    x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1 cada bloque
+apply(train_s, 2, var)
+
+test_s <- scale(test_n[-7], center = attr(train_s, "scaled:center"), 
+                scale = attr(train_s, "scaled:scale"))
+
+test_ss <- t(apply(test_s, 1, function(x){
+    x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1 cada bloque
+apply(test_s, 2, var)
+
+train <-  cbind(edad_menarquia = train_n$edad_menarquia, as.data.frame (train_ss)) #Se añade a la primera col
+test <-  cbind(edad_menarquia = test_n$edad_menarquia, as.data.frame(test_ss)) #se añade a la primera col
+
+head(train)
+head(test)
+
+```
+## Cross Validation Para KPCA + GAM (con Lasso)
+```{r}
+library(caret)
+library(glmnet)
+library(mgcv)
+library(FactoMineR)
+
+# Supón que tienes df_s con tus datos escalados
+set.seed(123)
+folds <- createFolds(train_n$edad_menarquia, k = 4, returnTrain = TRUE) #divido. los datos escalados en 5 folds
+
+
+scale_train_test <- function(train, test, id) {
+  
+  rescale_factors <- c(rep(sqrt(10), 6), rep(sqrt(4), 4), rep(sqrt(5), 5), rep(sqrt(10), 4))
+  # Escalar entrenamiento
+  train_scaled <- scale(train[-id])
+  center_vals <- attr(train_scaled, "scaled:center")
+  scale_vals <- attr(train_scaled, "scaled:scale")
+
+  # Escalar test con los mismos parámetros
+  test_scaled <- scale(test[-id], center = center_vals, scale = scale_vals)
+
+  # Reescalar ambos
+  train_rescaled <- t(apply(train_scaled, 1, function(x) x / rescale_factors))
+  test_rescaled <- t(apply(test_scaled, 1, function(x) x / rescale_factors))
+
+  # Reconstruir data.frames completos
+  train_out <- cbind(edad_menarquia = train$edad_menarquia, as.data.frame(train_rescaled))
+  test_out <- cbind(edad_menarquia = test$edad_menarquia, as.data.frame(test_rescaled))
+
+  list(train = train_out, test = test_out,
+       center = center_vals, scale = scale_vals)
+}
+
+
+
+results <- list()
+for (i in 1:4) {
+  train_idx <- folds[[i]]
+  train_fold_raw <- train_n[train_idx, ]
+  val_fold_raw <- train_n[-train_idx, ]
+  
+  scaled_data <- scale_train_test(train_fold_raw, val_fold_raw, id= 7)
+  train_fold <- scaled_data$train
+  val_fold <- scaled_data$test
+
+  #head(train_fold)
+  
+  kpca_model <- kpca(as.matrix(train_fold[-1]), 
+                 kernel = "rbfdot", 
+                 kpar = list(sigma = 0.1), 
+                 features = 18)  #realizamos el modelo del kPCA
+  
+  # Transformar ambos
+  train_p <- as.data.frame(predict(kpca_model, train_fold[-1]))
+  train_pca <- as.data.frame(cbind(edad_menarquia = train_fold$edad_menarquia, train_p))
+  val_pca <- as.data.frame(predict(kpca_model, val_fold[-1]))
+  
+  
+  #head(train_pca)
+  
+  cv_lasso <- cv.glmnet(as.matrix(train_pca[, -1]), train_pca$edad_menarquia, 
+                          alpha = 1, family = "gaussian", type.measure = "mae")
+  coef_lasso <- coef(cv_lasso, s = "lambda.min")
+  #print(coef_lasso)
+  
+  #Seleccionamos las dimensiones no nulas
+  selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1]  # Excluye intercepto
+  #print(selected_dims)
+  
+  #Construyes un modelo aditivo (gam) con splines cúbicos sobre las dimensiones seleccionadas por Lasso.
+  formula_gam <- as.formula(paste("edad_menarquia ~", 
+                                    paste0("s(", selected_dims, ", bs='cr')", collapse = " + ")))
+  #print(formula_gam)
+  
+  # Ajustar GAM
+  gam_model <- gam(formula_gam, data = train_pca)
+  #print(summary(gam_model))
+  
+  # Predecir y evaluar
+  preds <- predict(gam_model, newdata = val_pca)
+  actuals <- val_fold_raw$edad_menarquia
+  #plot(preds, actuals)
+  #abline(0, 1, col = "red")  
+
+  # Usar Metrics
+  eval_metrics <- list(
+  r2 = summary(gam_model)$r.sq
+  )
+  
+  # Guardar resultados
+  results[[i]] <- eval_metrics
+
+}
+
+
+mean_r2_adj <- mean(sapply(results, `[[`, "r2"))
+cat("R2 ajustada media:", mean_r2_adj, "\n")
+#print(results)
+
+sapply(results, `[[`, "r2")
+
+```
+
+## Reentrenamos el modelo con el conjunto completo de entrenamiento
+```{r}
+
+res.kpca <- kpca(as.matrix(train[-1]), 
+                 kernel = "rbfdot", 
+                 kpar = list(sigma = 0.1), 
+                 features = 18)
+
+
+
+new_ktrain <-  as.data.frame(predict(res.kpca, train[-1])) #transformamos nuestro dataset train en el mismo espacio del PCA
+new_ktrain <-  as.data.frame(cbind(edad_menarquia = train$edad_menarquia, new_ktrain)) #añadimos la variable dependiente
+
+trans_ktes <-  as.data.frame(predict(res.kpca, test[-1])) #transformamos nuestro dataset train en el mismo espacio del PCA
+
+#no vamos a añadir la variable dependiente usaremos test$edad_menarquia 
+#trans_ktes <-  as.data.frame(cbind(edad_menarquia = test$edad_menarquia, trans_ktes))
+
+head(new_ktrain)
+head(trans_ktes)
+```
+
+
+## Utilización de Lasso para selección de componentes + GAM
+```{r}
+set.seed(123)
+
+cv_lasso <- cv.glmnet(as.matrix(new_ktrain[, -1]), new_ktrain$edad_menarquia, 
+                        alpha = 1, family = "gaussian", type.measure = "mae") #deviance, mae, mse
+coef_lasso <- coef(cv_lasso, s = "lambda.min")
+selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1]  # Excluye intercepto
+#print(selected_dims)
+
+formula_gam <- as.formula(paste("edad_menarquia ~", 
+                                  paste0("s(", selected_dims, ", bs='cr')", collapse = " + ")))
+
+#print(formula_gam)
+kpcr_gm_model <- gam(formula_gam, data = new_ktrain, select =TRUE)
+print(summary(kpcr_gm_model))
+
+```
+
+# Predicciones
+```{r}
+kpcr_gm_pred <-  predict(kpcr_gm_model, trans_ktes)
+kpcr_gm_rmse <-  rmse(actual = test$edad_menarquia, predicted = as.numeric(kpcr_gm_pred))
+kpcr_gm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(kpcr_gm_pred))
+```
+
+```{r}
+print(kpcr_gm_rmse)
+print(kpcr_gm_mape)
+```
+
+# Interpretación variables
+```{r}
+kpca_ig_tan <- kpca_igrad(res.kpca, dim = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18)) #A data frame containing the sorted variables and their scores sorted in decreasing order.
+
+#dim = Number of kernel principal component to use for the computation of the scores.
+# It should be less or equal to the number of component of the kPCA
+head(kpca_ig_tan)
+```
+
+Aquí es donde debería haber más intepretación de las variables, gráficos de funciones no lineales, similares a las que obtenemos con GAM, de abajo. Como podríamos analizar las variables y como afectan a la variable respuesta. SE plantea con las funciones no lineales propias del kernel PCA.
+
+```{r}
+summary_gam <- summary(kpcr_gm_model)
+p_vals <- summary_gam$s.table[, "p-value"]
+term_names <- rownames(summary_gam$s.table)
+
+# Índices de los términos con p-value > 0.5
+high_p_indices <- which(p_vals < 0.5)
+par(mfrow = c(1, 1))  # o ajusta según cuántos gráficos hay
+for (i in high_p_indices) {
+  plot(kpcr_gm_model, select = i, shade = TRUE, main = term_names[i])
+}
+```
+
+
+
+
+
+
