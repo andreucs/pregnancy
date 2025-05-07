@@ -3,6 +3,7 @@ title: "Para Juan"
 output: html_notebook
 ---
 
+
 ```{r}
 library (pls)
 library(factoextra)
@@ -103,7 +104,7 @@ test_pca <- as.data.frame(predict(pca_model, test[-1])$coord)
 #head(train_pca)
 
 cv_lasso <- cv.glmnet(as.matrix(train_pca[, -1]), train_pca$edad_menarquia, 
-                        alpha = 1, family = "gaussian", type.measure = "mse")
+                        alpha = 1, family = "gaussian", type.measure = "mae")
 coef_lasso <- coef(cv_lasso, s = "lambda.min")
 selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1]  # Excluye intercepto
 #print(selected_dims)
@@ -115,7 +116,7 @@ pcr_gm_model <- gam(formula_gam, data = train_pca, select =TRUE)
 print(summary(pcr_gm_model))
 
 # Predecir y evaluar
-preds <- predict(pcr_gm_model, newdata = test_pca)
+preds <- predict(pcr_gm_model, newdata = test_pca[, selected_dims, drop = FALSE])
 actuals <- test$edad_menarquia
 #plot(preds, actuals)
 #abline(0, 1, col = "red")  
@@ -130,19 +131,74 @@ eval_metrics <- list(
 
 ```{r}
 
-pcr_gm_pred <-  predict(pcr_gm_model, test_pca)
-pcr_gm_rmse <-  rmse(actual = test$edad_menarquia, predicted = as.numeric(pcr_gm_pred))
-pcr_gm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(pcr_gm_pred))
+# 4. Objeto combinado y predict
+combined <- list(pca = pca_model, lasso = cv_lasso, gam = pcr_gm_model)
+class(combined) <- "pca_lasso_gam"
+
+predict.pca_lasso_gam <- function(object, newdata, type = "response", ...) {
+
+  scaled_data <- scale_train_test(train_n, newdata, id= 7)
+  test <- scaled_data$test
+  # 1) Proyectamos newdata en todos los PCs
+  #pcs_new <- predict(object$pca, newdata)$coords
+  
+  pcs_new <-  as.data.frame(predict(object$pca, test[-1])$coord)
+  #print(pcs_new)
+  
+  
+  # renombramos para matchear los coeficientes de glmnet
+  #colnames(pcs_new) <- paste0("PC", seq_len(ncol(pcs_df)))
+  
+  # 2) Extraemos los nombres de las PCs seleccionadas por LASSO
+  coefs <- coef(object$lasso, s = "lambda.1se")
+  selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1] 
+  #print(selected_dims)
+  
+  
+  # 3) Filtramos el data.frame de PCs sólo a las seleccionadas
+  pcs_final <-  pcs_new[, selected_dims, drop = FALSE]
+  #print(pcs_final)
+  
+  # 4) Finalmente, predecimos con el GAM ajustado sobre esas PCs
+  predict(object$gam, newdata = pcs_final, type = type, ...)
+  
+}
+# 5. DALEX
+pred <- Predictor$new(
+  model            = combined,
+  data             = test_n, 
+  predict.function = predict.pca_lasso_gam
+)
+
 
 
 ```
+
+```{r}
+
+pcr_gm_pred <-  predict(pcr_gm_model, test_pca[, selected_dims, drop = FALSE])
+pcr_gm_rmse <-  rmse(actual = test$edad_menarquia, predicted = as.numeric(pcr_gm_pred))
+pcr_gm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(pcr_gm_pred))
+pcr_gm_r2 <- 1 - sum((test$edad_menarquia - as.numeric(pcr_gm_pred))^2) / 
+                 sum((test$edad_menarquia - mean(test$edad_menarquia))^2)
+
+print(paste("RMSE:", pcr_gm_rmse))
+print(paste("MAPE:", pcr_gm_mape))
+print(paste("R2:", pcr_gm_r2))
+
+```
+
+```{r}
+
+```
+
 
 ```{r}
 loadings <-  as.data.frame(pca_model$var$coord)
 
 
 loadings$variable <- rownames(loadings)
-ggplot(loadings, aes(x = Dim.4, y = reorder(variable, Dim.4))) +
+ggplot(loadings, aes(x = Dim.3, y = reorder(variable, Dim.3))) +
   geom_col(fill = "#3B82F6") +  # barra azul
   labs(title = "",
        x = "Loadings (correlation with Dim.3)",
@@ -151,6 +207,40 @@ ggplot(loadings, aes(x = Dim.4, y = reorder(variable, Dim.4))) +
        
 loadings$Dim.3
 ```
+```{r}
+pdp <- FeatureEffect$new(pred, "madre_menarquia", method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Mother Menarch', limits = c(0, NA)) +
+  scale_y_continuous('Predicted Age Menarch', limits = c(9, 15)) +
+  theme_bw()
+p1
+```
+
+```{r}
+pdp = FeatureEffect$new(pred, c("paridad", "madre_menarquia"), method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Mother Menarch') +
+  scale_y_continuous('IMC') +
+  scale_fill_viridis("Age Menarch") +
+  labs(fill = "Predicted number of bikes") +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p1
+```
+
+```{r}
+ytext1 = sprintf("Different to prediction at Age At Menarch = %.1f", min(datos_c$edad_menarquia))
+ice1 = FeatureEffect$new(pred, feature = "madre_menarquia", center.at = min(datos_c$edad_menarquia), method = "ice")$plot() +
+  scale_y_continuous(ytext1) +
+  theme_bw()
+
+ice1
+```
+
 
 ```{r}
 library(mgcv)
