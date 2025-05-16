@@ -1,0 +1,393 @@
+```{r}
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(tidyr)
+library(VIM)
+
+df <- read_excel("Datos_Joaquin/datos_pregnancy5.xlsx")
+
+df <- df %>% filter((sexo == "niña"), !is.na(edad_menarquia))
+
+numeric_vars <- df %>% select(where(is.numeric)) %>% colnames()
+categorical_vars <- df %>% select(where(~is.character(.) | is.factor(.))) %>% colnames()
+
+for (var in numeric_vars) {
+  print(
+    ggplot(df, aes_string(x = var)) +
+      geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Histograma de", var), x = var, y = "Frecuencia")
+  )
+}
+
+for (var in categorical_vars) {
+  print(
+    ggplot(df, aes_string(x = var)) +
+      geom_bar(fill = "salmon", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Distribución de", var), x = var, y = "Frecuencia") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  )
+}
+```
+
+
+```{r}
+missing_percent <- df %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Porcentaje_Faltante") %>%
+  arrange(desc(Porcentaje_Faltante))
+
+# Mostrar los resultados
+print(missing_percent)
+```
+
+```{r}
+library(naniar)
+library(ggplot2)
+library(dplyr)
+
+# Crear gráfico de porcentaje de valores faltantes por variable
+missing_data <- df %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Porcentaje_Faltante")
+
+# Graficar
+ggplot(missing_data, aes(x = reorder(Variable, -Porcentaje_Faltante), y = Porcentaje_Faltante)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  geom_text(aes(label = paste0(round(Porcentaje_Faltante, 1), "%")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +  # Para mejorar la visualización si hay muchas variables
+  theme_minimal() +
+  labs(title = "Porcentaje de valores faltantes por variable",
+       x = "Variable",
+       y = "Porcentaje de valores faltantes")
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(naniar)
+
+num_vars <- c("pfhxs", "pfoa", "pfos", "pfna", "v_44DDT_w12_ni", 
+              "v_44DDE_w12_ni", "HCB_w12_ni", "bHCH_w12_ni", "PCBtotal3_w12_ni")
+resultados <- data.frame(Variable = character(), Test = character(), p_value = numeric())
+
+for (num_var in num_vars) {
+  for (miss_var in colnames(df)) {
+    if (num_var != miss_var) {
+      
+      df_temp <- df %>%
+        mutate(missing = ifelse(is.na(!!sym(miss_var)), 1, 0)) %>%
+        filter(!is.na(!!sym(num_var)))  # Quitar NAs en la variable numérica
+      
+      # Verificar que hay al menos 2 grupos distintos y suficientes observaciones
+      if (length(unique(df_temp$missing)) == 2 && 
+          min(table(df_temp$missing)) >= 2) {
+        
+        # Si hay dos grupos, realizar el t-test
+        test <- t.test(df_temp[[num_var]] ~ df_temp$missing)
+        p_value <- test$p.value
+
+        # Guardar resultados
+        resultados <- resultados %>%
+          add_row(Variable = miss_var, Test = paste("T-test con", num_var), p_value = p_value)
+      }
+    }
+  }
+}
+
+# Visualizar resultados ordenados por p-value
+resultados <- resultados %>% arrange(p_value)
+
+# Mostrar tabla de resultados
+print(resultados)
+
+# Visualizar variables con valores faltantes en relación con otras variables
+gg_miss_var(df) +
+  theme_minimal() +
+  labs(title = "Porcentaje de valores faltantes por variable",
+       x = "Variable",
+       y = "Porcentaje de valores faltantes")
+```
+
+
+
+```{r}
+library(Metrics)  # Para calcular RMSE y MAE
+library(VIM)
+library(dplyr)
+library(ggplot2)
+
+set.seed(123)  # Para reproducibilidad
+
+# Selección de variables con valores faltantes
+variables_a_imputar <- c("v_44DDT_w12_ni", "v_44DDE_w12_ni")
+
+# Crear dataset sin valores faltantes en las variables seleccionadas (ground truth)
+df_completo <- df %>% filter(complete.cases(select(., all_of(variables_a_imputar))))
+
+# Introducir valores faltantes en un 20% de los datos (para simulación)
+df_test <- df_completo
+for (var in variables_a_imputar) {
+  set.seed(123)
+  n_miss <- round(0.2 * nrow(df_test))  # 20% de valores faltantes
+  missing_indices <- sample(1:nrow(df_test), n_miss)
+  df_test[missing_indices, var] <- NA
+}
+
+# Definir el rango de valores de k a evaluar
+k_values <- seq(1, 20, by = 2)  # Probamos valores impares de k entre 1 y 20
+errors <- data.frame(k = k_values, RMSE = NA, MAE = NA)
+
+# Evaluar cada valor de k
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  
+  # Imputar valores faltantes con kNN
+  df_imputed <- kNN(df_test, variable = variables_a_imputar, k = k, imp_var = FALSE)
+  
+  # Calcular RMSE y MAE comparando con los valores originales
+  rmse_val <- mean(sapply(variables_a_imputar, function(var) {
+    rmse(df_completo[[var]], df_imputed[[var]])
+  }))
+  
+  mae_val <- mean(sapply(variables_a_imputar, function(var) {
+    mae(df_completo[[var]], df_imputed[[var]])
+  }))
+  
+  # Guardar los errores en la tabla
+  errors[i, "RMSE"] <- rmse_val
+  errors[i, "MAE"] <- mae_val
+}
+
+# Graficar los resultados para determinar el mejor k
+ggplot(errors, aes(x = k)) +
+  geom_line(aes(y = RMSE, color = "RMSE"), size = 1) +
+  geom_line(aes(y = MAE, color = "MAE"), size = 1) +
+  geom_point(aes(y = RMSE), color = "blue", size = 3) +
+  geom_point(aes(y = MAE), color = "red", size = 3) +
+  theme_minimal() +
+  labs(title = "Evaluación del Mejor k para Imputación kNN",
+       x = "Número de Vecinos (k)",
+       y = "Error",
+       color = "Métrica") +
+  scale_color_manual(values = c("RMSE" = "blue", "MAE" = "red"))
+
+# Mejor valor de k basado en el menor error
+best_k <- errors$k[which.min(errors$RMSE)]
+print(paste("El mejor valor de k según RMSE es:", best_k))
+
+```
+
+
+```{r}
+variables_a_imputar <- c("v_44DDT_w12_ni", "v_44DDE_w12_ni")
+
+df_imputar <- df %>% select(all_of(variables_a_imputar))
+
+df_imputado <- kNN(df_imputar, k = 3, imp_var = FALSE)  
+
+df[variables_a_imputar] <- df_imputado
+
+missing_percent_post_imputation <- df %>%
+  summarise(across(all_of(variables_a_imputar), ~ mean(is.na(.)) * 100))
+
+print(missing_percent_post_imputation)
+```
+```{r}
+df_long <- df %>%
+  select(all_of(variables_a_imputar)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Valor")
+
+# Graficar histogramas con densidad para cada variable
+ggplot(df_long, aes(x = Valor)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+  geom_density(color = "red", size = 1) +
+  facet_wrap(~ Variable, scales = "free", ncol = 2) +
+  theme_minimal() +
+  labs(
+    title = "Distribuciones de las Variables Después de la Imputación KNN",
+    x = "Valor",
+    y = "Densidad"
+  )
+```
+```{r}
+library(mice)
+library(dplyr)
+library(Metrics)  # Para RMSE y MAE
+library(ggplot2)
+library(tidyr)
+
+set.seed(123)  # Asegurar reproducibilidad
+
+# 1️⃣ Identificar variables con menos del 25% de valores faltantes
+missing_percent <- df %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Porcentaje_Faltante")
+
+vars_below_25 <- missing_percent %>%
+  filter(Porcentaje_Faltante > 0 & Porcentaje_Faltante < 25) %>%
+  pull(Variable)
+
+print(vars_below_25)  # Ver qué variables serán imputadas
+
+# 2️⃣ Crear un dataset sin valores faltantes para pruebas (Ground Truth)
+df_complete <- df %>% filter(complete.cases(select(., all_of(vars_below_25))))
+
+# 3️⃣ Introducir valores faltantes aleatorios para simulación (10% de los datos)
+df_test <- df_complete
+for (var in vars_below_25) {
+  set.seed(123)
+  n_miss <- round(0.1 * nrow(df_test))  # 10% de valores eliminados para prueba
+  missing_indices <- sample(1:nrow(df_test), n_miss)
+  df_test[missing_indices, var] <- NA
+}
+
+# 4️⃣ Métodos de imputación a evaluar
+methods_to_test <- c("pmm", "rf", "cart")
+
+# 5️⃣ Evaluar cada método de imputación
+results <- data.frame(Method = character(), RMSE = numeric(), MAE = numeric())
+
+for (method in methods_to_test) {
+  
+  # Aplicar MICE con el método actual
+  mice_imputed <- mice(df_test, m = 5, method = method, maxit = 20, seed = 123, printFlag = FALSE)
+  df_imputed <- complete(mice_imputed)
+  
+  # Calcular RMSE y MAE comparando con el dataset original
+  rmse_val <- mean(sapply(vars_below_25, function(var) {
+    rmse(df_complete[[var]], df_imputed[[var]])
+  }))
+  
+  mae_val <- mean(sapply(vars_below_25, function(var) {
+    mae(df_complete[[var]], df_imputed[[var]])
+  }))
+  
+  # Guardar resultados
+  results <- results %>% add_row(Method = method, RMSE = rmse_val, MAE = mae_val)
+}
+
+# 6️⃣ Visualizar los resultados
+ggplot(results, aes(x = Method)) +
+  geom_bar(aes(y = RMSE, fill = "RMSE"), stat = "identity", position = "dodge") +
+  geom_bar(aes(y = MAE, fill = "MAE"), stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Comparación de Métodos de Imputación con MICE",
+       x = "Método",
+       y = "Error",
+       fill = "Métrica") +
+  scale_fill_manual(values = c("RMSE" = "blue", "MAE" = "red"))
+
+# 7️⃣ Seleccionar el mejor método (menor RMSE)
+best_method <- results$Method[which.min(results$RMSE)]
+print(paste("El mejor método de imputación es:", best_method))
+```
+
+```{r}
+library(mice)
+library(dplyr)
+library(tidyr)
+
+missing_percent <- df %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Porcentaje_Faltante")
+
+vars_below_25 <- missing_percent %>%
+  filter(Porcentaje_Faltante > 0 & Porcentaje_Faltante < 25) %>%
+  pull(Variable) %>%
+  setdiff("madre_menarquia")
+
+print(vars_below_25)
+
+df_subset <- df %>% select(all_of(vars_below_25))
+
+mice_imputed <- mice(df_subset, m = 5, method = "rf", maxit = 50, seed = 123)
+
+df_imputed <- complete(mice_imputed)
+
+df[vars_below_25] <- df_imputed
+
+colSums(is.na(df[vars_below_25]))
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# 1️⃣ Convertir el dataset antes de la imputación a formato largo
+df_long_before <- df %>%
+  select(all_of(vars_below_25)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Valor") %>%
+  mutate(Estado = "Antes de la imputación")
+
+# 2️⃣ Convertir el dataset después de la imputación a formato largo
+df_long_after <- df %>%
+  select(all_of(vars_below_25)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Valor") %>%
+  mutate(Estado = "Después de la imputación")
+
+# 3️⃣ Unir los dos datasets para comparación
+df_plot <- bind_rows(df_long_before, df_long_after)
+
+# 4️⃣ Crear gráficos de densidad antes y después de la imputación
+ggplot(df_plot, aes(x = Valor, fill = Estado)) +
+  geom_density(alpha = 0.5) +  # Transparencia del gráfico
+  facet_wrap(~ Variable, scales = "free") +  # Un gráfico por variable
+  theme_minimal() +
+  labs(title = "Comparación de Distribuciones Antes y Después de la Imputación",
+       x = "Valor",
+       y = "Densidad") +
+  scale_fill_manual(values = c("Antes de la imputación" = "red", "Después de la imputación" = "blue"))
+
+```
+
+```{r}
+library(mice)
+library(dplyr)
+
+set.seed(123)  # Asegurar reproducibilidad
+
+# 1️⃣ Aplicar imputación con MICE usando pmm
+mice_model <- mice(df, method = "pmm", m = 5, maxit = 50, seed = 123)
+
+# 2️⃣ Extraer el dataframe imputado
+df_imputed <- complete(mice_model)
+
+# 3️⃣ Redondear la variable madre_menarquia para que solo tenga valores enteros
+df_imputed$madre_menarquia <- round(df_imputed$madre_menarquia)
+
+# 4️⃣ Verificar si hay valores no enteros (debería ser todo entero)
+print(unique(df_imputed$madre_menarquia))
+
+# 5️⃣ Sobrescribir la variable imputada en el dataframe original (opcional)
+df$madre_menarquia <- df_imputed$madre_menarquia
+
+df
+```
+
+
+```{r}
+for (variable in names(df)) {
+  cat("La variable", variable, "tiene", sum(is.na(df[[variable]])), "datos faltantes.\n")
+}
+```
+```{r}
+library(dplyr)
+names(df) <- sub("_w12.*", "", names(df))
+df <- df %>% rename_with(~ sub("_w12.*", "", .), contains("_w12"))
+df
+```
+
+
+```{r}
+library(writexl)
+write_xlsx(df, "Datos_Limpios/datos_limpios_5.xlsx")
+print("El archivo ha sido guardado exitosamente.")
+
+```
+
