@@ -9,7 +9,7 @@ This repository contains the development of an investigation project to compare 
 
   * `data_cleaning_notebooks` / notebooks: initial data cleaning, imputation, and outlier filtering.
 
-* **methodology/**:
+* **methods/**:
 
   * PCA + GAM: dimensionality reduction with PCA followed by nonlinear modeling with GAM.
   * Univariate and multivariate GAMs to capture nonlinear relationships between components and menarche age.
@@ -70,4 +70,4 @@ Jaime Ballester\*,¹, Andreu Bonet\*,¹, Juan Alfonso García\*,¹, Anna Gil\*,�
 
 ---
 
-For more details on methodology and parameter settings, refer to comments within each script and supporting documents in `Methodology/`.
+For more details on methodology and parameter settings, refer to comments within each script and supporting documents in `methods/`.
