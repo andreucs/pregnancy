@@ -1,0 +1,629 @@
+---
+title: "Metodología PCA+GAM"
+output: html_notebook
+---
+
+
+We start by loading the necessary libraries and the data. We will be using the transformed data (logarithmic) for our analysis.
+```{r}
+#loading of necessary libraries
+library(pls)
+library(factoextra)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(FactoMineR)
+library(factoextra)
+library(gridExtra)
+library(Metrics)
+library(kernlab)
+library(mgcv)
+library(caTools)
+library(ggplot2)
+library(pdp)
+library(patchwork)
+library(iml)
+library(corrplot)
+library(viridis)
+library(caret)
+library(glmnet)
+library(caTools)
+library(DALEX)
+
+#loading data
+df_t <-  read_excel('Data/datos_limpios_2_log_transformado.xlsx') #we will be using de transformed data (logaritmic)
+df_t <-  df_t %>% select (-c('pfhxs', 'pfoa', 'pfos', 'pfna', 'v_44DDT', 'v_44DDE', 'HCB', 'bHCH' , 'PCB'))
+head(df_t)
+```
+
+#Data Preprocessing
+```{r}
+
+#Normalization of binary variables.
+df_t[,'femb'] <- ifelse(df_t[,'femb'] == "Sí", 1, 0)
+df_t[, 'preterm'] <- ifelse(df_t[, 'preterm'] == "sí", 1, 0)
+df_t[, 'alcohol'] <- ifelse(df_t[, 'alcohol'] == "Si", 1, 0)
+
+
+#Building of dummies for each category (used in PCA)
+dummies <- model.matrix(~ tipozona - 1, data = df_t)
+print (colnames(dummies))
+colnames(dummies) <- c("z_Rural", "z_Semiurbana", "z_Urbana")
+df_t <- cbind(df_t, dummies)
+
+#Tansformation to ordinal variable
+df_t$Clase_social <- as.numeric(factor(df_t$CSMIX3, levels = c("CS I+II", "CS III", "CS IV+V"), ordered = TRUE))
+
+#Selection of variables of interest
+df_t <- df_t %>% select(-c('sexo', 'idnum', 'CSMIX3'))
+
+#Renaming of variables so that they are easier to interpret
+colnames(df_t) <- c( "femb", "preterm" , "madre_menarquia","imc" , "paridad" , "tipozona", "alcohol" ,  "edad_menarquia" ,"l_pfhxs", "l_pfoa", "l_pfos", "l_pfna"    ,"l_DDT","l_DDE", "l_HCB", "l_bHCH", "l_PCB", "z_Rural", "z_Semiurbana","z_Urbana","Clase_social")
+head(df_t)
+
+```
+
+```{r}
+datos_c <- df_t %>% select(-c('tipozona'))
+matriz_cor <- cor(datos_c, use = "pairwise.complete.obs")
+corrplot(matriz_cor, method = "color", addrect = 1, 
+         tl.col = "black")
+```
+
+# General PCA
+We do a general PCA that we will be using for exploring the Data. 
+
+## Preparation of the Data.
+As observed in data exploration, variables not only are not the same scale, but also are correlated in groups. That is why we do a Block-wise Standarization to Unit Variance.
+```{r}
+#datos_c <- df_t %>% select(-c('tipozona'))
+datos_ae <- as.data.frame(scale(datos_c))
+datos_eb <- t(apply(datos_ae[-7], 1, function(x){
+    x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))}))
+apply(datos_eb, 2, var) #to ensure the variance of each group is the one we look for
+
+datos_eb <- cbind(edad_menarquia = datos_c$edad_menarquia, as.data.frame(datos_eb))
+head(datos_eb)
+```
+
+
+## Building the Principal Component Analysis.
+
+```{r}
+res.pca = PCA(datos_eb, scale.unit = FALSE, 
+              graph = FALSE, ncp = 10, quanti.sup = 1)
+
+fviz_eig(res.pca, addlabels = TRUE)  + 
+  theme(panel.grid = element_blank()) 
+```
+
+
+```{r}
+p3_12 <- fviz_pca_var(res.pca, 
+                   axes = c(1, 2), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), select.var = list("cos2"=10)) + 
+  theme(panel.grid = element_blank()) 
+
+p3_13 <- fviz_pca_var(res.pca, 
+                   axes = c(3, 4), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), select.var = list("cos2"=10)) + 
+  theme(panel.grid = element_blank()) 
+
+#cos2 mide la calidad de representación de cada variable en el espacio del PCA
+
+
+
+grid.arrange(p3_12, p3_13, nrow = 1)
+```
+Basic and short interpretation of the PCA:
+- Dim1 appears to capture a general axis of chemical exposure, contrasting PFAS compounds with other maternal characteristics.
+- Dim3, on the other hand, may be reflecting a finer differentiation among types of chemicals (e.g., l_pfna vs. l_pfhxs), or differences in their behavior or absorption patterns—factors that break the correlation structure observed in Dim1.
+
+This does not contradict the correlation seen in Dim1; rather, it suggests that the relationship among these variables may not be entirely linear or one-dimensional. In other words, there is more than one way in which these variables differ. This could be a signal that nonlinear relationships exist within the chemical exposures themselves, pointing to the potential benefit of using a kernel-based method to better capture these complex, multidimensional patterns.
+
+### Outliers
+```{r}
+K = 10
+misScores = res.pca$ind$coord[,1:K]
+eig.val <- get_eigenvalue(res.pca)
+miT2 = colSums(t(misScores**2)/eig.val[1:K,1])
+I = nrow(datos_eb)
+F95 = K*(I**2 - 1)/(I*(I - K)) * qf(0.95, K, I-K)
+F99 = K*(I**2 - 1)/(I*(I - K)) * qf(0.99, K, I-K)
+
+plot(1:length(miT2), miT2, type = "p", xlab = "News", ylab = "T2") + 
+  theme(panel.grid = element_blank()) 
+abline(h = F95, col = "orange", lty = 2, lwd = 2)
+abline(h = F99, col = "red3", lty = 2, lwd = 2)
+```
+
+
+```{r}
+#to see how many instances are outliers
+anomalos = sum(miT2 > F95)
+anomalos 
+
+```
+
+# Methodology.
+Now that we have a minimal exploration of the data and what is the general bwhavour of the data and features. We are starting the process of the PCA and GAm methodology proposed. Firstly we will be doing a preparation of the data, the same way we did with the data for the PCA. However, dividing the data into train and test before scaling.
+
+## Data Preparation
+In first place we divide the data into train and test. We will be using 70% of the data for training and 30% for testing. 
+```{r}
+set.seed(123)
+split <- sample.split(datos_c$edad_menarquia, SplitRatio = 0.7)
+train_n <- datos_c[split,]
+test_n <- datos_c[!split,]
+head(train_n)
+```
+Next we do the scaling and block-wise standardization of the data. We will be using the same scaling as before, but now we will be using the train data to scale the test data. WE create a function with which we will be scaling the data throughtout the analysis. 
+```{r}
+
+scale_train_test <- function(train, test, id) {
+  
+  rescale_factors <- c(rep(sqrt(10), 6), rep(sqrt(4), 4), rep(sqrt(5), 5), rep(sqrt(10), 4))
+  # Scale the training
+  train_scaled <- scale(train[-id])
+  center_vals <- attr(train_scaled, "scaled:center")
+  scale_vals <- attr(train_scaled, "scaled:scale")
+
+  # Scale the test dataset using the scaler and center as the ones for training
+  test_scaled <- scale(test[-id], center = center_vals, scale = scale_vals)
+
+  # Block wise standarization to unit variance
+  train_rescaled <- t(apply(train_scaled, 1, function(x) x / rescale_factors))
+  test_rescaled <- t(apply(test_scaled, 1, function(x) x / rescale_factors))
+
+  
+  train_out <- cbind(edad_menarquia = train$edad_menarquia, as.data.frame(train_rescaled))
+  test_out <- cbind(edad_menarquia = test$edad_menarquia, as.data.frame(test_rescaled))
+
+  list(train = train_out, test = test_out,
+       center = center_vals, scale = scale_vals)
+}
+
+```
+
+## Modelling.
+We will be building three different models (linear model, GAM model, PCA and GAM model), two used for comparing our PCA and GAM with them. In each model we use the same methodology:
+
+- First we build the model with the training data.
+- Then we do a cross-validation with the training data to see how the model performs. Saving the R^2 adjusted of the model.
+- Finally we do a prediction with the test data and calculate the RMSE, MAPE and R^2 adjusted of the model.
+
+### Linear Model.
+Starting with our first base model, we build our linear model with the variables not scaled. 
+
+```{r}
+lm_model <- lm(edad_menarquia ~ .   - z_Rural, data = train_n) 
+summary(lm_model)
+```
+
+
+```{r}
+# Cross Validation for Linear Model
+set.seed(123)
+folds <- createFolds(train_n$edad_menarquia, k = 5, returnTrain = TRUE)
+
+r2_values <- c()
+
+for (i in 1:5) {
+  train_idx <- folds[[i]]
+  train_fold <- train_n[train_idx, ]
+  val_fold <- train_n[-train_idx, ]
+  
+  #Linear Model
+  lm_model <- lm(edad_menarquia ~ . - z_Rural, data = train_fold)
+  
+  #Prediction and R² calculation
+  preds <- predict(lm_model, newdata = val_fold)
+  actuals <- val_fold$edad_menarquia
+  r2 <- 1 - sum((actuals - preds)^2) / sum((actuals - mean(actuals))^2)
+  
+  r2_values <- c(r2_values, r2)
+}
+
+# Mean of R²
+lm_model_r2_adj <- mean(r2_values)
+
+```
+
+```{r}
+# Prediction and evaluation
+lm_model_pred <-  predict(lm_model, test_n)
+lm_model_rmse <- rmse (actual = test_n$edad_menarquia, predicted = as.numeric(lm_model_pred))
+lm_model_mape <- mape(actual = test_n$edad_menarquia, predicted = as.numeric(lm_model_pred))
+lm_model_r2 <- 1 - sum((test_n$edad_menarquia - as.numeric(lm_model_pred))^2) / 
+                 sum((test_n$edad_menarquia - mean(test_n$edad_menarquia))^2)
+```
+
+### GAM Model
+The second base model used for comparing it with the PCA and GAM is the GAM model. We will be using the same variables as in the linear model.
+```{r}
+gam_model <-gam (edad_menarquia ~ s(madre_menarquia, bs = 'cr') 
+           + femb + preterm + s(imc, bs = 'cr') + s(paridad, bs = 'cr', k = 2) 
+           + alcohol + s(l_pfhxs, bs = 'cr') + s(l_pfoa, bs = 'cr') 
+           + s(l_pfos, bs = 'cr') + s(l_pfna, bs = 'cr') + s(l_DDT, bs = 'cr') + s(l_DDE, bs = 'cr') 
+           + s(l_HCB, bs = 'cr') + s(l_bHCH, bs = 'cr') + s(l_PCB, bs = 'cr') + z_Rural + z_Semiurbana 
+           + Clase_social, data = train_n) 
+
+summary(gam_model)
+
+```
+
+```{r}
+# Cross Validation for GAM Model
+set.seed(123)
+folds <- createFolds(train_n$edad_menarquia, k = 5, returnTrain = TRUE)
+
+r2_values <- c()
+
+for (i in 1:5) {
+  train_idx <- folds[[i]]
+  train_fold <- train_n[train_idx, ]
+  val_fold <- train_n[-train_idx, ]
+  
+  # GAM model
+  gam_model <-gam (edad_menarquia ~ s(madre_menarquia, bs = 'cr') 
+           + femb + preterm + s(imc, bs = 'cr') + s(paridad, bs = 'cr', k = 2) 
+           + alcohol + s(l_pfhxs, bs = 'cr') + s(l_pfoa, bs = 'cr') 
+           + s(l_pfos, bs = 'cr') + s(l_pfna, bs = 'cr') + s(l_DDT, bs = 'cr') + s(l_DDE, bs = 'cr') 
+           + s(l_HCB, bs = 'cr') + s(l_bHCH, bs = 'cr') + s(l_PCB, bs = 'cr') + z_Rural + z_Semiurbana 
+           + Clase_social, data = train_fold) 
+
+  
+  # PRediction and R² calculation
+  preds <- predict(gam_model, newdata = val_fold)
+  actuals <- val_fold$edad_menarquia
+  r2 <- 1 - sum((actuals - preds)^2) / sum((actuals - mean(actuals))^2)
+  
+  r2_values <- c(r2_values, r2)
+}
+
+# Mean of R²
+gam_model_r2_adj <- mean(r2_values)
+```
+
+
+```{r}
+# Prediction and evaluation
+gam_model_pred <-  predict(gam_model, test_n)
+gam_model_rmse <- rmse (actual = test_n$edad_menarquia, predicted = as.numeric(gam_model_pred))
+gam_model_mape <- mape(actual = test_n$edad_menarquia, predicted = as.numeric(gam_model_pred))
+gam_model_r2 <- 1 - sum((test_n$edad_menarquia - as.numeric(gam_model_pred))^2) / 
+                 sum((test_n$edad_menarquia - mean(test_n$edad_menarquia))^2)
+
+```
+
+
+
+### GAM + PCA Model
+This methodology consists on firstly scaling the train data and test data. Then projecting both training and test into the PCA space obtained from doing a PCA with the training. Then a LAsso regression will be applied so that the dimensions are selected. Finally, a GAM model will be fitted with the selected dimensions. This way we address not only multicollinearity but also nonlinearity between variables and age at menach.
+
+```{r}
+scaled_data <- scale_train_test(train_n, test_n, id= 7)
+train <- scaled_data$train
+test <- scaled_data$test
+
+res.pca = PCA(train[-1], scale.unit = FALSE, 
+              graph = FALSE, ncp = 18) #determine the space where we will be projecting
+
+#estamos usando res.pca$var$coord internamente
+trans_tes <-  as.data.frame(predict(res.pca, test[-1])$coord) #transform our test data into the PCA space
+
+new_train <-  as.data.frame(cbind(train$edad_menarquia, res.pca$ind$coord)) #transform our train data into the PCA space
+
+colnames(new_train)[1] <- 'edad_menarquia'
+head(new_train)
+#head(trans_tes)
+```
+Before doing the PCA + GAM model, we will check that if we do a prediction with the train data and all the dimensions, we get exactly the same RMSE and MAPE as with the previous linear model. 
+
+```{r}
+pcr_lm_model <- lm(edad_menarquia ~ ., data = new_train) 
+
+summary(pcr_lm_model)
+```
+
+```{r}
+pcr_lm_pred <-  predict(pcr_lm_model, trans_tes)
+pcr_lm_rmse <- rmse (actual = test$edad_menarquia, predicted = as.numeric(pcr_lm_pred))
+pcr_lm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(pcr_lm_pred))
+
+```
+
+```{r}
+cat("RMSE del modelo lineal: ", lm_model_rmse, "\n")
+cat("RMSE del modelo PCR: ", pcr_lm_rmse, "\n")
+
+cat("MAPE del modelo lineal: ", lm_model_mape, "\n")
+cat("MAPE del modelo PCR: ", pcr_lm_mape, "\n")
+```
+As we see the RMSE and MAPE are the same as the linear model, so we can see that train and test are both well transformed into the PCA space.
+
+Now we do the cross - validation of the methodology proposed. In a way that we determine the space of the folds with a PCA, so that we can do a Lasso regression to select the dimensions and avoid overfitting. Finally we fit a GAM model and calculate the adjusted R^2.
+
+
+```{r}
+
+### Cross Validation GAM + PCA
+
+set.seed(123)
+folds <- createFolds(train_n$edad_menarquia, k = 5, returnTrain = TRUE) #divido. los datos escalados en 5 folds
+results <- list()
+for (i in 1:5) {
+  train_idx <- folds[[i]]
+  train_fold_raw <- train_n[train_idx, ]
+  val_fold_raw <- train_n[-train_idx, ]
+  
+
+  scaled_data <- scale_train_test(train_fold_raw, val_fold_raw, id= 7)
+  train_fold <- scaled_data$train
+  val_fold <- scaled_data$test
+
+  #head(train_fold)
+  
+  # PCA Model
+  pca_model <- PCA(train_fold[-1], scale.unit = FALSE, ncp = 18, graph = FALSE) #realizamos el modelo del PCA
+  # Transform data
+  train_pca <- as.data.frame(cbind(edad_menarquia = train_fold$edad_menarquia, pca_model$ind$coord))
+  val_pca <- as.data.frame(predict(pca_model, val_fold[-1])$coord)
+  
+  
+  #head(train_pca)
+  
+  # Lasso regression
+  cv_lasso <- cv.glmnet(as.matrix(train_pca[, -1]), train_pca$edad_menarquia, 
+                          alpha = 1, family = "gaussian", type.measure = "mae")
+  coef_lasso <- coef(cv_lasso, s = "lambda.min")
+  #print(coef_lasso)
+  selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1]  # Excluye intercepto
+  #print(selected_dims)
+  
+  #Building of formula for GAM model
+  formula_gam <- as.formula(paste("edad_menarquia ~", 
+                                    paste0("s(", selected_dims, ", bs='cr')", collapse = " + ")))
+  #print(formula_gam)
+  
+  
+  # Adjusting GAM model
+  gam_model <- gam(formula_gam, data = train_pca)
+  #print(summary(gam_model))
+  
+  # Prediction and evaluation
+  preds <- predict(gam_model, newdata = val_pca[, selected_dims, drop = FALSE])  # Usar sólo las dimensiones seleccionadas)
+  actuals <- val_fold_raw$edad_menarquia
+  #plot(preds, actuals)
+  #abline(0, 1, col = "red")  
+
+  # Use of Metrics
+  eval_metrics <- list(
+  #r2 = summary(gam_model)$r.sq
+    r2 = 1 - sum((preds - actuals)^2) / sum((actuals - mean(actuals))^2)
+  )
+  
+  # Save results
+  results[[i]] <- eval_metrics
+
+}
+
+
+pcr_gm_r2_adj <- mean(sapply(results, `[[`, "r2"))
+cat("Mean adjusted R2:", pcr_gm_r2_adj, "\n")
+#print(results)
+
+sapply(results, `[[`, "r2")
+
+```
+
+Now we retrain with all the data.
+```{r}
+
+scaled_data <- scale_train_test(train_n, test_n, id= 7)
+train <- scaled_data$train
+test <- scaled_data$test
+
+pca_model <- PCA(train[-1], scale.unit = FALSE, ncp = 18, graph = FALSE) #realizamos el modelo del PCA
+
+train_pca <- as.data.frame(cbind(edad_menarquia = train$edad_menarquia, pca_model$ind$coord))
+test_pca <- as.data.frame(predict(pca_model, test[-1])$coord)
+#head(train_pca)
+
+set.seed(123)
+cv_lasso <- cv.glmnet(as.matrix(train_pca[, -1]), train_pca$edad_menarquia, 
+                        alpha = 1, family = "gaussian", type.measure = "mae")
+coef_lasso <- coef(cv_lasso, s = "lambda.min")
+selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1]  # Excluye intercepto
+#print(selected_dims)
+
+
+formula_gam <- as.formula(paste("edad_menarquia ~", 
+                                  paste0("s(", selected_dims, ", bs='cr')", collapse = " + ")))
+
+pcr_gm_model <- gam(formula_gam, data = train_pca, select =TRUE)
+print(summary(pcr_gm_model))
+```
+```{r}
+pcr_gm_pred <-  predict(pcr_gm_model, test_pca[, selected_dims, drop = FALSE] )
+pcr_gm_rmse <-  rmse(actual = test$edad_menarquia, predicted = as.numeric(pcr_gm_pred))
+pcr_gm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(pcr_gm_pred))
+pcr_gm_r2 <- 1 - sum((test$edad_menarquia - as.numeric(pcr_gm_pred))^2) / 
+                 sum((test$edad_menarquia - mean(test$edad_menarquia))^2)
+```
+
+#### Interpretation
+
+For the interpretation we do it on two levels, firstly we will be focusing on the loadings and nonlinear functions, then using explainable AI for the interpretation of the model. 
+```{r}
+library(mgcv)
+library(ggplot2)
+
+# Paso 1: Obtener p-values del modelo GAM
+p_vals <- summary(pcr_gm_model)$s.table[, "p-value"]
+
+# Paso 2: Nombres de términos smooth seleccionados
+gam_terms <- names(p_vals)
+
+# Extraer número de dimensión (ej: de "s(Dim.3)" extraer "Dim.3")
+dims_with_high_p <- gsub("s\\((Dim\\.\\d+)\\)", "\\1", gam_terms[p_vals < 0.5])
+
+# Paso 3: Cargar loadings del PCA
+loadings <-  as.data.frame(pca_model$var$coord)
+loadings$variable <- rownames(loadings)
+
+# Paso 4: Graficar para cada dimensión con p-value > 0.5
+library(ggplot2)
+
+library(ggplot2)
+library(rlang)  # para sym()
+
+for (dim_name in dims_with_high_p) {
+  g1 <- ggplot(loadings, aes(x = !!sym(dim_name), y = reorder(variable, !!sym(dim_name)))) +
+    geom_col(fill = "#3B82F6") +
+    labs(title = paste("Loadings -", dim_name),
+         x = paste("Loadings (correlation with", dim_name, ")"),
+         y = "Original Variable") +
+    theme_minimal()+ 
+  theme(panel.grid = element_blank()) 
+  print(g1)
+}
+
+```
+
+```{r}
+summary_gam <- summary(pcr_gm_model)
+p_vals <- summary_gam$s.table[, "p-value"]
+term_names <- rownames(summary_gam$s.table)
+
+# Índices de los términos con p-value > 0.5
+high_p_indices <- which(p_vals < 0.5)
+par(mfrow = c(1, 1))  # o ajusta según cuántos gráficos hay
+for (i in high_p_indices) {
+  plot(pcr_gm_model, select = i, shade = TRUE, main = term_names[i])+ 
+  theme(panel.grid = element_blank()) 
+}
+```
+
+
+For using explainable AI we will be using the DALEX library. We will be using the predict function to do the prediction with the PCA + GAM model. However it is needed to create a pipelibe, so that we can use the predict function. 
+```{r}
+library(mgcv)      # para gam()
+library(glmnet)    # para cv.glmnet()
+
+
+
+# 4. Objeto combinado y predict
+combined <- list(pca = pca_model, lasso = cv_lasso, gam = pcr_gm_model)
+class(combined) <- "pca_lasso_gam"
+
+predict.pca_lasso_gam <- function(object, newdata, type = "response", ...) {
+
+  scaled_data <- scale_train_test(train_n, newdata, id= 7)
+  test <- scaled_data$test
+  # 1) Proyectamos newdata en todos los PCs
+  #pcs_new <- predict(object$pca, newdata)$coords
+  
+  pcs_new <-  as.data.frame(predict(object$pca, test[-1])$coord)
+  #print(pcs_new)
+  
+  
+  # renombramos para matchear los coeficientes de glmnet
+  #colnames(pcs_new) <- paste0("PC", seq_len(ncol(pcs_df)))
+  
+  # 2) Extraemos los nombres de las PCs seleccionadas por LASSO
+  coefs <- coef(object$lasso, s = "lambda.1se")
+  selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1] 
+  #print(selected_dims)
+  
+  
+  # 3) Filtramos el data.frame de PCs sólo a las seleccionadas
+  pcs_final <-  pcs_new[, selected_dims, drop = FALSE]
+  #print(pcs_final)
+  
+  # 4) Finalmente, predecimos con el GAM ajustado sobre esas PCs
+  predict(object$gam, newdata = pcs_final, type = type, ...)
+  
+}
+# 5. DALEX
+pred <- Predictor$new(
+  model            = combined,
+  data             = test_n, 
+  predict.function = predict.pca_lasso_gam
+)
+
+
+```
+
+
+```{r}
+#Partial Dependence Plot (PDP)
+pdp <- FeatureEffect$new(pred, "l_pfos", method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Log PFOS', limits = c(1, NA)) +
+  scale_y_continuous('Predicted Age Menarch', limits = c(9, 15)) +
+  theme_bw()+ 
+  theme(panel.grid = element_blank()) 
+p1
+```
+
+
+```{r}
+#Biplot PDP
+pdp = FeatureEffect$new(pred, c("l_pfos", "l_HCB"), method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Log PFOS') +
+  scale_y_continuous('Log HCB') +
+  scale_fill_viridis("Age Menarch") +
+  labs(fill = "Predicted number of bikes") +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p1
+```
+```{r}
+#Indivual Conditional Expectation (ICE)
+ytext1 = sprintf("Different to prediction at Age At Menarch = %.1f", min(datos_c$edad_menarquia))
+ice1 = FeatureEffect$new(pred, feature = "l_pfos", center.at = min(datos_c$l_pfos), method = "ice")$plot() +
+  scale_y_continuous(ytext1) +
+  scale_x_continuous('Log PFOS')+
+  theme_bw()+ 
+  theme(panel.grid = element_blank()) 
+
+ice1
+```
+
+
+
+# Comparison of Models.
+Comparison between the three models built. We will be using the RMSE, MAPE, R^2 adjusted and the CV R^2 adjusted, as metrics for comparing the models. 
+```{r}
+data.frame(
+  Modelo = c("LM", "GAM", "PCA + GAM"),
+  R2_Adj = c(
+    lm_model_r2,
+    gam_model_r2,
+    pcr_gm_r2
+  ),
+  MAPE = c(
+    lm_model_mape,
+    gam_model_mape,
+    pcr_gm_mape
+  ),
+  RMSE = c(
+    lm_model_rmse,
+    gam_model_rmse,
+    pcr_gm_rmse
+    
+  ),
+  R2_Adj_CV = c(
+    lm_model_r2_adj,
+    gam_model_r2_adj,
+    pcr_gm_r2_adj
+  )
+)
+```
+

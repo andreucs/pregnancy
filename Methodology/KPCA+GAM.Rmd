@@ -152,7 +152,7 @@ library(FactoMineR)
 
 # Supón que tienes df_s con tus datos escalados
 set.seed(123)
-folds <- createFolds(train_n$edad_menarquia, k = 4, returnTrain = TRUE) #divido. los datos escalados en 5 folds
+folds <- createFolds(train_n$edad_menarquia, k = 5, returnTrain = TRUE) #divido. los datos escalados en 5 folds
 
 
 scale_train_test <- function(train, test, id) {
@@ -181,7 +181,7 @@ scale_train_test <- function(train, test, id) {
 
 
 results <- list()
-for (i in 1:4) {
+for (i in 1:5) {
   train_idx <- folds[[i]]
   train_fold_raw <- train_n[train_idx, ]
   val_fold_raw <- train_n[-train_idx, ]
@@ -231,7 +231,8 @@ for (i in 1:4) {
 
   # Usar Metrics
   eval_metrics <- list(
-  r2 = summary(gam_model)$r.sq
+  #r2 = summary(gam_model)$r.sq
+  r2 = 1 - sum((preds - actuals)^2) / sum((actuals - mean(actuals))^2)
   )
   
   # Guardar resultados
@@ -290,16 +291,102 @@ print(summary(kpcr_gm_model))
 
 ```
 
-# Predicciones
+
+## Interpretación
 ```{r}
-kpcr_gm_pred <-  predict(kpcr_gm_model, trans_ktes)
-kpcr_gm_rmse <-  rmse(actual = test$edad_menarquia, predicted = as.numeric(kpcr_gm_pred))
-kpcr_gm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(kpcr_gm_pred))
+
+# 4. Objeto combinado y predict
+combined <- list(pca = res.kpca, lasso = cv_lasso, gam = kpcr_gm_model)
+class(combined) <- "pca_lasso_gam"
+
+predict.pca_lasso_gam <- function(object, newdata, type = "response", ...) {
+
+  scaled_data <- scale_train_test(train_n, newdata, id= 7)
+  test <- scaled_data$test
+  # 1) Proyectamos newdata en todos los PCs
+  #pcs_new <- predict(object$pca, newdata)$coords
+  
+  pcs_new <-  as.data.frame(predict(object$pca, test[-1]))
+  #print(pcs_new)
+  
+  
+  # renombramos para matchear los coeficientes de glmnet
+  #colnames(pcs_new) <- paste0("PC", seq_len(ncol(pcs_df)))
+  
+  # 2) Extraemos los nombres de las PCs seleccionadas por LASSO
+  coefs <- coef(object$lasso, s = "lambda.min")
+  selected_dims <- rownames(coef_lasso)[which(coef_lasso != 0)][-1] 
+  #print(selected_dims)
+  
+  
+  # 3) Filtramos el data.frame de PCs sólo a las seleccionadas
+  pcs_final <-  pcs_new[, selected_dims, drop = FALSE]
+  #print(pcs_final)
+  
+  # 4) Finalmente, predecimos con el GAM ajustado sobre esas PCs
+  predict(object$gam, newdata = pcs_final, type = type, ...)
+  
+}
+# 5. DALEX
+pred <- Predictor$new(
+  model            = combined,
+  data             = test_n, 
+  predict.function = predict.pca_lasso_gam
+)
 ```
 
 ```{r}
-print(kpcr_gm_rmse)
-print(kpcr_gm_mape)
+pdp <- FeatureEffect$new(pred, "l_pfos", method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Log PFOS', limits = c(0, NA)) +
+  scale_y_continuous('Predicted Age Menarch', limits = c(9, 15)) +
+  theme_bw()+ 
+  theme(panel.grid = element_blank()) 
+p1
+```
+```{r}
+pdp = FeatureEffect$new(pred, c("l_pfos", "l_HCB"), method = "pdp")
+p1 = pdp$plot() +
+  scale_x_continuous('Log PFOS') +
+  scale_y_continuous('Log HCB') +
+  scale_fill_viridis("Age Menarch") +
+  labs(fill = "Predicted number of bikes") +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p1
+```
+
+```{r}
+ytext1 = sprintf("Different to prediction at Age At Menarch = %.1f", min(datos_c$edad_menarquia))
+ice1 = FeatureEffect$new(pred, feature = "l_pfos", center.at = min(datos_c$l_pfos), method = "ice")$plot() +
+  scale_y_continuous(ytext1) +
+  scale_x_continuous('Log PFOS')+
+  theme_bw()+ 
+  theme(panel.grid = element_blank()) 
+
+ice1
+```
+
+
+# Predicciones
+```{r}
+kpcr_gm_pred <-  predict(kpcr_gm_model, trans_ktes[, selected_dims, drop = FALSE])
+kpcr_gm_rmse <-  rmse(actual = test$edad_menarquia, predicted = as.numeric(kpcr_gm_pred))
+kpcr_gm_mape <- mape(actual = test$edad_menarquia, predicted = as.numeric(kpcr_gm_pred))
+kpcr_gm_r2 <- 1 - sum((test$edad_menarquia - as.numeric(kpcr_gm_pred))^2) / 
+                 sum((test$edad_menarquia - mean(test$edad_menarquia))^2)
+
+```
+
+```{r}
+print(paste("RMSE:", kpcr_gm_rmse))
+print(paste("MAPE:", kpcr_gm_mape))
+print(paste("R2 Adj:", kpcr_gm_r2))
+print(paste("R2 Adj CV:", mean_r2_adj))
 ```
 
 # Interpretación variables
