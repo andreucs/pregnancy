@@ -7,7 +7,7 @@ This repository contains the development of an investigation project to compare 
 * **Dashboard/**: Shiny application (`app.R`) to interactively visualize and compare results from each method.
 * **Data_cleaning/**:
 
-  * `01_preprocess_data.R` / notebooks: initial data cleaning, imputation, and outlier filtering.
+  * `PROJ_III_CLEANING_NOTEBOOK_1.RMD` / notebooks: initial data cleaning, imputation, and outlier filtering.
 
 * **Methodology/**:
 
