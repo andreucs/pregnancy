@@ -5,7 +5,7 @@ This repository contains the development of an investigation project to compare 
 ## Folder Structure
 
 * **Dashboard/**: Shiny application (`app.R`) to interactively visualize and compare results from each method.
-* **LimpiezaDatos/**:
+* **Data_cleaning/**:
 
   * `01_preprocess_data.R` / notebooks: initial data cleaning, imputation, and outlier filtering.
 
