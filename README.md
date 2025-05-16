@@ -4,12 +4,12 @@ This repository contains the development of an investigation project to compare 
 
 ## Folder Structure
 
-* **Dashboard/**: Shiny application (`app.R`) to interactively visualize and compare results from each method.
+* **dashboard/**: Shiny application (`app.R`) to interactively visualize and compare results from each method.
 * **Data_cleaning/**:
 
-  * `Data_Cleaning_Notebooks` / notebooks: initial data cleaning, imputation, and outlier filtering.
+  * `data_cleaning_notebooks` / notebooks: initial data cleaning, imputation, and outlier filtering.
 
-* **Methodology/**:
+* **methodology/**:
 
   * PCA + GAM: dimensionality reduction with PCA followed by nonlinear modeling with GAM.
   * Univariate and multivariate GAMs to capture nonlinear relationships between components and menarche age.
