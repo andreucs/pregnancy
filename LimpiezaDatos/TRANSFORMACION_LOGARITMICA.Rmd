@@ -6,7 +6,7 @@ library(moments)
 library(dplyr)
 
 # 1️⃣ Cargar el dataset
-df <- read_excel("Datos_Limpios/datos_limpios_1.xlsx")
+df <- read_excel("Datos_Limpios/datos_limpios_5.xlsx")
 
 # 2️⃣ Seleccionar solo las variables numéricas
 num_vars <- df %>% dplyr::select(where(is.numeric))
@@ -38,7 +38,7 @@ library(dplyr)
 library(writexl)
 
 # 1️⃣ Cargar el dataset
-df <- read_excel("Datos_Limpios/datos_limpios_1.xlsx")
+df <- read_excel("Datos_Limpios/datos_limpios_5.xlsx")
 
 # 2️⃣ Definir nombres actualizados de variables químicas
 quimicos_vars <- c("pfhxs", "pfoa", "pfos", "pfna", "v_44DDT", "v_44DDE", "HCB", "bHCH", "PCB")
@@ -60,7 +60,7 @@ cat("Variables transformadas con log1p:\n")
 print(paste0("log_", quimicos_vars))
 
 # 6️⃣ (Opcional) Guardar resultado
-write_xlsx(df, "Datos_Transformados/datos_limpios_1_log_transformado.xlsx")
+write_xlsx(df, "Datos_Transformados/datos_limpios_5_log_transformado.xlsx")
 
 ```
 

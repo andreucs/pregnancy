@@ -1,0 +1,118 @@
+---
+title: "Data4PLS"
+author: "Kiril"
+date: "`r Sys.Date()`"
+output: html_document
+---
+## Data cleaning
+
+### Libraries and data
+
+In this document, we will perform the data preprocessing necessary to apply kernel transformations to the dataset. We will use libraries such as `tidyverse`, `dplyr`, and `readxl` to handle and prepare the data accordingly.
+
+```{r Libraries}
+library(tidyverse)
+library(readxl)
+library(dplyr)
+setwd(".")
+```
+
+Next, we proceed to read the dataset. In this step, we will explore both the original data and its logarithmic transformations to assess the impact on subsequent analyses.
+
+```{r}
+df <- read_excel('C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/datos_limpios_2.xlsx')
+df_t <-  read_excel('C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/datos_limpios_2_log_transformado.xlsx')
+
+df_t <-  df_t %>% select (-c('pfhxs', 'pfoa', 'pfos', 'pfna', 'v_44DDT', 'v_44DDE', 'HCB', 'bHCH' , 'PCB'))
+```
+
+### Binary variables
+
+The first step in preprocessing involves transforming all binary variables into numerical format, where "Yes" responses are coded as 1 and "No" responses as 0. Specifically, we apply this transformation to the following variables: `femb` (whether the mother smoked during pregnancy), `preterm` (whether the child was born prematurely), and `alcohol` (whether the mother consumed alcohol during pregnancy).
+
+```{r Binary}
+df[,'femb'] <- ifelse(df[,'femb'] == "Sí", 1, 0)
+df[, 'preterm'] <- ifelse(df[, 'preterm'] == "sí", 1, 0)
+df[, 'alcohol'] <- ifelse(df[, 'alcohol'] == "Si", 1, 0)
+
+df_t[,'femb'] <- ifelse(df_t[,'femb'] == "Sí", 1, 0)
+df_t[, 'preterm'] <- ifelse(df_t[, 'preterm'] == "sí", 1, 0)
+df_t[, 'alcohol'] <- ifelse(df_t[, 'alcohol'] == "Si", 1, 0)
+```
+
+### Categorical variables
+
+The next step consists of converting categorical variables into numerical representations. For the variable representing social class, we assume an ordinal structure and therefore assign numerical values accordingly. In contrast, for the variable indicating the type of residential area, we apply one-hot encoding to create dummy variables, as this variable is nominal in nature.
+
+```{r Categorical}
+dummies <- model.matrix(~ tipozonaM - 1, data = df)
+print (colnames(dummies))
+colnames(dummies) <- c("z_Rural", "z_Semiurbana", "z_Urbana")
+df <- cbind(df, dummies)
+
+df$Clase_social <- as.numeric(factor(df$CSMIX3, levels = c("CS I+II", "CS III", "CS IV+V"), ordered = TRUE))
+
+
+dummies <- model.matrix(~ tipozona - 1, data = df_t)
+print (colnames(dummies))
+colnames(dummies) <- c("z_Rural", "z_Semiurbana", "z_Urbana")
+df_t <- cbind(df_t, dummies)
+
+df_t$Clase_social <- as.numeric(factor(df_t$CSMIX3, levels = c("CS I+II", "CS III", "CS IV+V"), ordered = TRUE))
+```
+
+### Prepare dataset
+
+We now prepare the dataset by removing all previously transformed variables, as well as the `ID` and `sex` variables, since they are deemed irrelevant for the analysis. Furthermore, we rename the remaining variables to improve clarity and ease of interpretation.
+
+
+```{r Clean}
+#Seleccionamaos las variables de interés
+df <- df %>% select(-c('sexo', 'idnum','CSMIX3', "tipozonaM"))
+df_t <- df_t %>% select(-c('sexo', 'idnum','CSMIX3', "tipozona"))
+
+colnames(df) <- c( "femb", "preterm" , "madre_menarquia","imc" , "paridad" , "alcohol" ,  "edad_menarquia" ,"pfhxs", "pfoa", "pfos", "pfna"    ,"DDT","DDE", "HCB", "bHCH", "PCB", "z_Rural", "z_Semiurbana","z_Urbana","Clase_social")
+
+colnames(df_t) <- c( "femb", "preterm" , "madre_menarquia","imc" , "paridad" , "alcohol" ,  "edad_menarquia" ,"l_pfhxs", "l_pfoa", "l_pfos", "l_pfna"    ,"l_DDT","l_DDE", "l_HCB", "l_bHCH", "l_PCB", "z_Rural", "z_Semiurbana","z_Urbana","Clase_social")
+
+head(df)
+head(df_t)
+```
+
+## Scaling and centering
+
+Partial Least Squares (PLS) models perform better when variables are scaled to ensure that all features contribute equally to the computation of components, and centered to enhance interpretability. However, since our dataset consists of groups of contaminant variables, we apply scaling within each group rather than across all variables globally.
+
+```{r Division}
+X = subset(df, select = -edad_menarquia)
+y = df$edad_menarquia
+
+X_t = subset(df_t, select = -edad_menarquia)
+y_t = df_t$edad_menarquia
+```
+
+```{r Scaling}
+X <- scale(X)
+y <- scale(y)
+X_t <- scale(X_t)
+y_t <- scale(y_t)
+
+X <- t(apply(X, 1, function(x){
+    x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1 cada bloque
+
+X_t <- t(apply(X_t, 1, function(x){
+  x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1
+```
+
+### Save data
+
+Finally, we combine the processed data and export it to a CSV file in order to apply kernel transformations in subsequent steps.
+
+```{r Save}
+data_reg <- data.frame(X, edad_menarquia = y)
+data_log  <- data.frame(X_t, edad_menarquia = y_t)
+
+write.csv(data_reg, file = "C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/PLS_K-PLS/Regular_cleaned_scaled.csv", row.names = FALSE)
+write.csv(data_log, file = "C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/PLS_K-PLS/Transformed_cleaned_scaled.csv", row.names = FALSE)
+```
+

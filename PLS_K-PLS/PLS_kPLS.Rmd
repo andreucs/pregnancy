@@ -1,0 +1,400 @@
+---
+title: "PLS_kPLS"
+author: "Kiril"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Do Prenatal Pollutants Shape Pubertal Developement?
+
+## Kernel PLS
+
+### Libraries and data
+
+In this analysis, we will fit PLS models using the datasets transformed with the selected kernel functions. The performance of these models will be compared, and the results will be interpreted through visualizations. For this purpose, we will use the `pls` package to build the models and rely primarily on `plotly` for graphical interpretation.
+
+```{r Libraries}
+library(pls)
+library(Metrics)
+library(plotly)
+setwd(".")
+```
+
+Next, we import the data. Initially we will use both 
+
+```{r Data}
+df_lineal <- read.csv("Transformed_cleaned_scaled.csv")
+df_rbf <- read.csv("Log_rbf.csv")
+df_poly <- read.csv("Log_poly.csv")
+df_sig <- read.csv("Log_sig.csv")
+df_lap <- read.csv("Log_lap.csv")
+```
+
+And we divide it
+
+```{r}
+X_lineal = subset(df_lineal, select = -edad_menarquia)
+y_lineal = df_lineal$edad_menarquia
+```
+
+
+## Regular PLS
+
+We begin by fitting a standard PLS model to the original (non-kernel-transformed) data. First, we determine the optimal number of components. Then, using the `pls` package, we train the model with 5-fold cross-validation (repeated 4 times). From this process, we obtain the key performance metrics: R², adjusted R², MAPE (Mean Absolute Percentage Error), MAE (Mean Absolute Error), and RMSE (Root Mean Square Error), which will serve as a basis for comparison with the kernel-based models.
+
+
+```{r Best componentes}
+model <- plsr(edad_menarquia~., data = df_lineal, ncomp = 19, validation = "CV")
+
+# Obtener errores de predicción por número de componentes
+rmse_vals <- RMSEP(model)
+plot(rmse_vals, legendpos = "topright")
+
+# Elegir el número de componentes que minimiza el RMSEP
+best_ncomp <- which.min(rmse_vals$val[1, 1, ])  # 1,1 para datos originales; 3D array
+cat("Mejor número de componentes:", best_ncomp, "\n")
+```
+Obtenemos que el numero optimo de componentes en este caso es 8
+
+```{r Metricas}
+model <- plsr(edad_menarquia~., data = df_lineal, ncomp = 8, validation = "CV")
+
+# Predicciones
+y_pred <- predict(model, ncomp = 8)[,,1]
+y_true <- df_lineal[,"edad_menarquia"]
+
+# Métricas
+SStot <- sum((y_true - mean(y_true))^2)
+SSres <- sum((y_true - y_pred)^2)
+R2 <- 1 - SSres/SStot
+
+n <- length(y_true)
+p <- 11
+R2_adj <- 1 - (1 - R2) * (n - 1) / (n - p - 1)
+
+mae <- mae(y_true, y_pred)
+rmse <- rmse(y_true, y_pred)
+mape <- mape(y_true, y_pred)
+
+cat("R2:", R2, "\n")
+cat("R2 ajustado:", R2_adj, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+```
+
+El R² de 0.199 indica que el modelo explica aproximadamente el 20% de la varianza en la edad de menarquia a partir de las variables predictoras. Esto sugiere una relación débil, aunque no trivial.
+
+El MAE de 0.71 años implica un error promedio de poco más de 8 meses en la predicción.
+
+El RMSE cercano a 0.89 señala errores más frecuentes alrededor de 11 meses.
+
+El MAPE cercano a 95% sugiere una elevada dispersión relativa del error, lo que refuerza la idea de que el modelo tiene poder predictivo limitado pero potencialmente útil para identificar tendencias generales.
+
+
+```{r Weight}
+weights <- loadings(model)
+barplot(weights[,4], main = "Pesos - Componente 1", las = 2)
+```
+El gráfico de pesos para la Componente 1 nos permite entender qué variables contribuyen más a la dirección principal de la varianza explicada.
+
+l_pfhxs (PFAS): Peso alto positivo (~0.65)
+
+l_pfoa, l_pfos, l_pfna (PFAS): Pesos positivos moderados (~0.25)
+
+alcohol y clase_social: contribuyen positivamente pero en menor magnitud
+
+La exposición a PFAS (especialmente PFHxS) durante el embarazo está fuertemente asociada con un aumento en la edad de la menarquia. Esto puede reflejar un efecto endocrino disruptivo que retrasa el desarrollo puberal.
+
+l_HCB, l_bHCH, l_DDE (organochlorados): fuertemente negativos (~-0.35)
+
+paridad, imc: también con pesos negativos relevantes
+
+La exposición a organochlorados durante el embarazo estaría relacionada con una menor edad de menarquia, en línea con efectos hormonales contrarios a los PFAS. Esto sugiere un patrón opuesto entre tipos de contaminantes.
+
+```{r weights}
+# Definir grupos
+pfas <- c("l_pfna", "l_pfoa", "l_pfos", "l_pfhxs")
+contaminantes <- c("l_DDT", "l_DDE", "l_PCB", "l_HCB", "l_bHCH")
+
+# Obtener pesos
+weights_mat <- loadings(model)
+x_weights <- weights_mat[, 2]
+y_weights <- weights_mat[, 4]
+var_names <- colnames(df_lineal)
+
+# Asignar color según categoría
+colores <- ifelse(var_names %in% pfas, "red",
+            ifelse(var_names %in% contaminantes, "blue", "black"))
+
+# Graficar
+plot(x_weights, y_weights,
+     xlab = "w*c2", ylab = "w*c4", main = "Weights",
+     xlim = range(x_weights) * 1.2, ylim = range(y_weights) * 1.2,
+     pch = 19, col = colores)
+
+# Añadir etiquetas
+text(x_weights, y_weights, labels = var_names, col = colores, cex = 0.8, pos = 3)
+
+# Líneas guía
+abline(h = 0, v = 0, col = "black", lty = 2)
+
+# Añadir leyenda
+legend("topleft", legend = c("polyfluoroalkyl ", "organochlorine ", "Context"),
+       col = c("red", "blue", "black"), pch = 19, bty = "n")
+```
+
+Los PFAS (rojo) se agrupan en el cuadrante superior derecho → contribuyen positivamente al componente.
+
+Los organochlorados (azul) se agrupan en el cuadrante inferior derecho → contribuyen negativamente.
+
+Las variables contextuales (negro) están más dispersas y centradas, lo que indica una contribución más moderada y heterogénea.
+
+La separación clara de PFAS y organoclorados sugiere que el modelo está captando un eje biológico que los distingue en su efecto sobre la menarquia.
+
+
+
+```{r T2}
+# Hotelling's T2: sum of squared standardized scores
+scores_scaled <- scale(model$scores)
+T2 <- rowSums(scores_scaled^2)
+
+plot(T2, type = "h", main = "Hotelling's T²", ylab = "T²", xlab = "Observación")
+abline(h = quantile(T2, 0.975), col = "red", lty = 2)
+```
+
+Este gráfico evalúa valores atípicos multivariantes:
+
+Hay observaciones con valores T² superiores al umbral (línea roja) → podrían ser individuos con perfiles contaminantes o contextuales extremos.
+
+Importante revisar estas observaciones, ya que podrían influir desproporcionadamente en los componentes.
+
+
+```{r SCR}
+residuals <- residuals(model)[,,8]  # Residuales del modelo con 11 componentes
+SCR <- residuals^2
+
+plot(SCR, type = "h", main = "SCR (Squared Correlation Residuals)", 
+     xlab = "Observación", ylab = "SCR")
+```
+
+Evalúa el ajuste del modelo por observación.
+
+Hay múltiples puntos con SCR > 4 → indican mal ajuste local en ciertos individuos.
+
+✅ Acción sugerida:
+Evaluar si estos individuos comparten características comunes (e.g., alto PFAS + bajo contexto) y considerar si necesitan ser modelados por separado o imputados.
+
+```{r tvsu}
+t_scores <- scores(model)[,1]
+u_scores <- model$Yscores[,1]
+
+plot(t_scores, u_scores, pch = 19, col = "darkgreen",
+     xlab = "t (X score)", ylab = "u (Y score)", main = "t vs u")
+```
+
+El gráfico muestra la correlación entre los scores del predictor (X) y respuesta (Y).
+
+Aunque hay cierta alineación, la dispersión indica una correlación débil entre los componentes latentes, consistente con el R² bajo.
+
+```{r Observed vs Predicted}
+plot(y_true, y_pred, pch = 19, col = "blue",
+     xlab = "Observado", ylab = "Predicho", main = "Observado vs Predicho")
+abline(a = 0, b = 1, col = "red", lty = 2)
+```
+
+Se observa una tendencia general, pero con mucha dispersión → el modelo captura parte de la señal, pero hay alta variabilidad residual.
+
+La línea ideal (45°) no es seguida estrechamente por los puntos → evidencia del ajuste limitado.
+
+#### Resumen
+
+Este primer modelo lineal de PLSR revela una relación modesta entre contaminantes medidos durante el embarazo y la edad de la menarquia. Específicamente:
+
+PFAS (especialmente PFHxS y PFOA) se asocian con una menarquia más tardía.
+
+Organochlorados (HCB, DDE, bHCH) se asocian con una menarquia más temprana.
+
+Las variables contextuales tienen un rol secundario pero ayudan a capturar patrones complementarios.
+
+El modelo tiene valor explicativo bajo-moderado (R² ≈ 0.2), con errores relativamente grandes → sugiere que hay otros factores importantes no modelados (genéticos, nutricionales, etc.).
+
+## Kernelised Tests
+
+
+### RHKS Kernel
+
+```{r RHKS comp}
+model <- plsr(edad_menarquia~., data = df_lineal, ncomp = 19, method = "kernelpls", validation = "CV")
+
+# Obtener errores de predicción por número de componentes
+rmse_vals <- RMSEP(model)
+plot(rmse_vals, legendpos = "topright")
+
+# Elegir el número de componentes que minimiza el RMSEP
+best_ncomp <- which.min(rmse_vals$val[1, 1, ])  # 1,1 para datos originales; 3D array
+cat("Mejor número de componentes:", best_ncomp, "\n")
+```
+El numero optimo de componentes es 11
+
+```{r RHKS metrics}
+model <- plsr(edad_menarquia~., data = df_lineal, ncomp = 11, method = "kernelpls", validation = "CV")
+
+# Predicciones
+y_pred <- predict(model, ncomp = 11)[,,1]
+y_true <- df_lineal[,"edad_menarquia"]
+
+# Métricas
+SStot <- sum((y_true - mean(y_true))^2)
+SSres <- sum((y_true - y_pred)^2)
+R2 <- 1 - SSres/SStot
+
+n <- length(y_true)
+p <- 11
+R2_adj <- 1 - (1 - R2) * (n - 1) / (n - p - 1)
+
+mae <- mae(y_true, y_pred)
+rmse <- rmse(y_true, y_pred)
+mape <- mape(y_true, y_pred)
+
+cat("R2:", R2, "\n")
+cat("R2 ajustado:", R2_adj, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+```
+
+Excatamente lo mismo, no vamos a cambiar lo de arriba
+
+
+### Con el laplaciano
+
+```{r}
+model <- plsr(y~., data = df_lap, ncomp = 500, method = "kernelpls", validation = "CV")
+
+# Obtener errores de predicción por número de componentes
+rmse_vals <- RMSEP(model)
+plot(rmse_vals, legendpos = "topright")
+
+# Elegir el número de componentes que minimiza el RMSEP
+best_ncomp <- which.min(rmse_vals$val[1, 1, ])  # 1,1 para datos originales; 3D array
+cat("Mejor número de componentes:", best_ncomp, "\n")
+```
+
+```{r}
+model <- plsr(y~., data = df_lap, ncomp = 101, method = "kernelpls", validation = "CV")
+
+# Predicciones
+y_pred <- predict(model, ncomp = 11)[,,1]
+y_true <- df_lineal[,"edad_menarquia"]
+
+# Métricas
+SStot <- sum((y_true - mean(y_true))^2)
+SSres <- sum((y_true - y_pred)^2)
+R2 <- 1 - SSres/SStot
+
+n <- length(y_true)
+p <- 11
+R2_adj <- 1 - (1 - R2) * (n - 1) / (n - p - 1)
+
+mae <- mae(y_true, y_pred)
+rmse <- rmse(y_true, y_pred)
+mape <- mape(y_true, y_pred)
+
+cat("R2:", R2, "\n")
+cat("R2 ajustado:", R2_adj, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+```
+
+### Kernel Gaussiano
+
+```{r}
+model <- plsr(y~., data = df_rbf, ncomp = 101, method = "kernelpls", validation = "CV")
+
+# Predicciones
+y_pred <- predict(model, ncomp = 11)[,,1]
+y_true <- df_lineal[,"edad_menarquia"]
+
+# Métricas
+SStot <- sum((y_true - mean(y_true))^2)
+SSres <- sum((y_true - y_pred)^2)
+R2 <- 1 - SSres/SStot
+
+n <- length(y_true)
+p <- 11
+R2_adj <- 1 - (1 - R2) * (n - 1) / (n - p - 1)
+
+mae <- mae(y_true, y_pred)
+rmse <- rmse(y_true, y_pred)
+mape <- mape(y_true, y_pred)
+
+cat("R2:", R2, "\n")
+cat("R2 ajustado:", R2_adj, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+```
+
+### Polynomial Kernel
+
+```{r}
+model <- plsr(y~., data = df_poly, ncomp = 101, method = "kernelpls", validation = "CV")
+
+# Predicciones
+y_pred <- predict(model, ncomp = 11)[,,1]
+y_true <- df_lineal[,"edad_menarquia"]
+
+# Métricas
+SStot <- sum((y_true - mean(y_true))^2)
+SSres <- sum((y_true - y_pred)^2)
+R2 <- 1 - SSres/SStot
+
+n <- length(y_true)
+p <- 11
+R2_adj <- 1 - (1 - R2) * (n - 1) / (n - p - 1)
+
+mae <- mae(y_true, y_pred)
+rmse <- rmse(y_true, y_pred)
+mape <- mape(y_true, y_pred)
+
+cat("R2:", R2, "\n")
+cat("R2 ajustado:", R2_adj, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+```
+
+### Sigmoid Kernel
+
+```{r}
+model <- plsr(y~., data = df_sig, ncomp = 101, method = "kernelpls", validation = "CV")
+
+# Predicciones
+y_pred <- predict(model, ncomp = 11)[,,1]
+y_true <- df_lineal[,"edad_menarquia"]
+
+# Métricas
+SStot <- sum((y_true - mean(y_true))^2)
+SSres <- sum((y_true - y_pred)^2)
+R2 <- 1 - SSres/SStot
+
+n <- length(y_true)
+p <- 11
+R2_adj <- 1 - (1 - R2) * (n - 1) / (n - p - 1)
+
+mae <- mae(y_true, y_pred)
+rmse <- rmse(y_true, y_pred)
+mape <- mape(y_true, y_pred)
+
+cat("R2:", R2, "\n")
+cat("R2 ajustado:", R2_adj, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+```
+
+## Intepretacion 
+
+Volvemos a entrenarlo

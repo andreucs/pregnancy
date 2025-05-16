@@ -1,0 +1,334 @@
+---
+title: "pls"
+output: html_document
+date: "2025-03-31"
+---
+
+## Data preparation
+
+### Libraries and data
+
+In this analysis, we integrate both R and Python to leverage the strengths of each language. Python will be employed specifically for implementing the kernel trick, given that R lacks robust libraries for this technique. All other steps of the workflow—including data cleaning, modeling, and interpretation—will be conducted in R. For data wrangling, we will utilize libraries such as `dplyr` and the `tidyverse` collection. The modeling will be performed using the `pls` package, and model evaluation and visualization will be handled with `metrics` and `plotly`, respectively.
+
+```{r}
+library(pls)
+library(tidyverse)
+library(caret)
+library(readxl)
+library(dplyr)
+library(ropls)
+library(Metrics)
+setwd(".")
+df <- read_excel('C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/datos_limpios_2.xlsx')
+df_t <-  read_excel('C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/datos_limpios_2_log_transformado.xlsx')
+
+df_t <-  df_t %>% select (-c('pfhxs', 'pfoa', 'pfos', 'pfna', 'v_44DDT', 'v_44DDE', 'HCB', 'bHCH' , 'PCB'))
+
+
+#Procesamos las variables binarias
+df_t[,'femb'] <- ifelse(df_t[,'femb'] == "Sí", 1, 0)
+df_t[, 'preterm'] <- ifelse(df_t[, 'preterm'] == "sí", 1, 0)
+df_t[, 'alcohol'] <- ifelse(df_t[, 'alcohol'] == "Si", 1, 0)
+
+
+# Crear dummies para cada categoría, será para el PCA
+dummies <- model.matrix(~ tipozona - 1, data = df_t)
+print (colnames(dummies))
+colnames(dummies) <- c("z_Rural", "z_Semiurbana", "z_Urbana")
+df_t <- cbind(df_t, dummies)
+
+#TRansformamos a numérica ordinal
+df_t$Clase_social <- as.numeric(factor(df_t$CSMIX3, levels = c("CS I+II", "CS III", "CS IV+V"), ordered = TRUE))
+
+#Seleccionamaos las variables de interés
+df_t <- df_t %>% select(-c('sexo', 'idnum','CSMIX3', "tipozona"))
+
+colnames(df_t) <- c( "femb", "preterm" , "madre_menarquia","imc" , "paridad" , "alcohol" ,  "edad_menarquia" ,"l_pfhxs", "l_pfoa", "l_pfos", "l_pfna"    ,"l_DDT","l_DDE", "l_HCB", "l_bHCH", "l_PCB", "z_Rural", "z_Semiurbana","z_Urbana","Clase_social")
+
+head(df)
+head(df_t)
+```
+
+
+```{r}
+
+set.seed(100)
+trainFilas = createDataPartition(df_t$edad_menarquia, p=0.8, list=FALSE)
+Xtrain = subset(df_t[trainFilas,], select = -edad_menarquia)
+ytrain = df_t$edad_menarquia[trainFilas]
+Xtest = subset(df_t[-trainFilas,], select = -edad_menarquia)
+ytest = df_t$edad_menarquia[-trainFilas]
+
+head(Xtrain)
+head(ytrain)
+head(Xtest)
+head(ytest)
+
+```
+
+```{r}
+#escalamos variables por bloques, como hemos hecho con PCA, preguntar si al escalar tengo que hacerlo todo por separado.
+Xtrain_s <- scale(Xtrain)
+Xtest_s <- scale(Xtest)
+ytrain_s <- scale(ytrain)
+ytest_s <- scale(ytest)
+
+Xtrain_s <- t(apply(Xtrain_s, 1, function(x){
+    x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1 cada bloque
+
+Xtest_s <- t(apply(Xtest_s, 1, function(x){
+  x/c(rep(sqrt(10), 6),rep(sqrt(4),4), rep(sqrt(5), 5), rep(sqrt(10), 4))})) #escalamos a varianza 1 cada bloque
+
+apply(Xtrain_s, 2, var)
+apply(Xtest_s, 2, var)
+
+```
+
+```{r}
+mypls = opls(x = Xtrain_s, y = ytrain_s, predI = NA, crossvalI = 10, 
+               scaleC = "none", fig.pdfC = "none")
+```
+
+```{r}
+maxNC = min(dim(Xtrain_s)); maxNC
+```
+
+```{r}
+myplsC = opls(x = Xtrain_s, y = ytrain_s, predI = maxNC, crossvalI = 10, 
+              scaleC = "none", fig.pdfC = "none")
+```
+
+```{r}
+# mypls@modelDF  ## Para recuperar la información de cada componente
+plot(1:maxNC, myplsC@modelDF$`R2Y(cum)`, type = "o", pch = 16, col = "blue3",
+     lwd = 2, xlab = "Components", ylab = "", ylim = c(0,1),
+     main = "PLS model")
+lines(1:maxNC, myplsC@modelDF$`Q2(cum)`, type = "o", pch = 16, col = "red3",
+      lwd = 2)
+abline(h = 0.5, col = "red3", lty = 2)
+legend("bottomleft", c("R2Y", "Q2"), lwd = 2, 
+       col = c("blue3", "red3"), bty = "n")
+```
+
+```{r}
+mypls = opls(x = Xtrain_s, y = ytrain_s, predI = 2, crossvalI = 10, scaleC = "none")
+```
+```{r}
+plot(x = mypls, typeVc = "x-score",
+     parAsColFcVn = NA, parCexN = 0.8, parCompVi = c(1, 2),
+     parEllipsesL = FALSE, parLabVc = rownames(Xtrain_s), parPaletteVc = NA,
+     parTitleL = TRUE, parCexMetricN = NA)
+```
+```{r}
+plot(x = mypls, typeVc = "xy-weight",
+     parCexN = 0.7, parCompVi = c(1, 2), parPaletteVc = NA, 
+     parTitleL = TRUE, parCexMetricN = NA)
+```
+
+
+
+
+```{r}
+misScores = mypls@scoreMN
+varT = apply(misScores, 2, var)
+miT2 = colSums(t(misScores**2) / varT)
+N = nrow(df_t)
+A = 2
+F95 = A*(N**2 - 1)/(N*(N - A)) * qf(0.95, A, N-A); F95
+F99 = A*(N**2 - 1)/(N*(N - A)) * qf(0.99, A, N-A); F99
+```
+
+
+
+```{r}
+plot(1:length(miT2), miT2, type = "l", xlab = "aceites", ylab = "T2",
+     main = "PLS: T2-Hotelling", ylim = c(0,15))
+abline(h = F95, col = "orange", lty = 2, lwd = 2)
+abline(h = F99, col = "red3", lty = 2, lwd = 2)
+```
+
+```{r}
+outliers_99 = which(miT2 > F99)
+print(outliers_99)
+```
+
+```{r}
+contribT2_pls = function (X, scores, loadings, eigenval, observ) {
+  misScoresNorm = t(t(scores^2) / eigenval)  
+  misContrib = NULL
+  
+  for (oo in observ) {
+    misPCs = which(as.numeric(misScoresNorm[oo,]) > 2)  # Puedes ajustar el umbral de cutoff
+    
+    lacontri = sapply(misPCs, function(cc) (scores[oo, cc] / eigenval[cc]) * loadings[, cc] * X[oo,])
+    lacontri = rowSums((sign(lacontri) == 1) * lacontri)
+    
+    misContrib = cbind(misContrib, lacontri)
+  }
+  
+  colnames(misContrib) = rownames(misScoresNorm[observ,])
+  return(misContrib)
+}
+
+eigenval_pls = apply(mypls@scoreMN, 2, var)
+
+mycontrisT2_pls = contribT2_pls(X = Xtrain_s, scores = mypls@scoreMN, 
+                                 loadings = mypls@loadingMN, 
+                                 eigenval = eigenval_pls, 
+                                 observ = outliers_99)
+
+boxplot(t(mycontrisT2_pls), las = 2, col = "lightgray",
+        main = "Distribución de Contribuciones de Variables a T²",
+        ylab = "Contribución")
+```
+
+```{r}
+
+for (i in 1:length(outliers_99)) {
+  barplot(mycontrisT2_pls[,i], las = 2, col = "steelblue",
+          main = paste("Contribución de Variables - Instancia", outliers_99[i]),
+          ylab = "Contribución a T2")
+}
+```
+
+
+
+```{r}
+myT = mypls@scoreMN
+myP = mypls@loadingMN
+myE = scale(Xtrain_s) - myT%*%t(myP) 
+mySCR = rowSums(myE^2)   # SPE 
+plot(1:length(mySCR), mySCR, type = "l", main = "PLS: Distancia2 al modelo", 
+     ylab = "SCR", xlab = "aceites", ylim = c(0,100))
+g = var(mySCR)/(2*mean(mySCR))
+h = (2*mean(mySCR)^2)/var(mySCR)
+chi2lim = g*qchisq(0.95, df = h)
+abline(h = chi2lim, col = "orange", lty = 2)
+chi2lim99 = g*qchisq(0.99, df = h)
+abline(h = chi2lim99, col = "red3", lty = 2)
+```
+
+
+
+
+
+```{r}
+# t vs u
+par(mfrow = c(1,2))
+plot(mypls@scoreMN[,1], mypls@uMN[,1], xlab = "t", ylab = "u",
+     main = "Component 1", col = "red3")
+abline(a=0, b=1, col = "grey", lty = 3)
+plot(mypls@scoreMN[,2], mypls@uMN[,2], xlab = "t", ylab = "u",
+     main = "Component 2", col = "red3")
+abline(a=0, b=1, col = "grey", lty = 3)
+```
+
+```{r}
+diag(cor(mypls@scoreMN, mypls@uMN))
+```
+
+
+```{r}
+mypred <-  predict(mypls, Xtest_s)
+rmse <- rmse(actual = ytest_s, predicted = as.numeric(mypred))
+mae <- mean(abs(ytest_s - as.numeric(mypred)))
+sst <- sum((ytest_s - mean(ytest_s))^2)  # suma total de cuadrados
+sse <- sum((ytest_s - as.numeric(mypred))^2)  # suma de errores al cuadrado
+r2 <- 1 - sse/sst
+n <- length(ytest_s)  # número de observaciones
+p <- ncol(Xtest_s)    # número de predictores
+r2_adj <- 1 - (1 - r2) * (n - 1) / (n - p - 1)
+
+cat("RMSE:", rmse, "\n")
+cat("MAE:", mae, "\n")
+cat("R²:", r2, "\n")
+cat("R² ajustado:", r2_adj, "\n")
+```
+```{r}
+plot(ytest, predict(mypls, Xtest_s), xlab = "Observed", ylab = "Predicted", main = "Observed vs Predicted")
+abline(0, 1, col = "red")
+```
+
+```{r}
+vip_scores <- mypls@vipVn
+barplot(vip_scores, las = 2, main = "Variable Importance (VIP)", col = "steelblue")
+```
+
+```{r}
+plot(residuals(mypls), main = "Residuals", ylab = "Residual", xlab = "Observation")
+abline(h = 0, col = "red")
+```
+
+
+```{r}
+library(pls)
+
+# modelo PLS usando método kernelpls
+modelo_kpls <- plsr(edad_menarquia ~ ., data = cbind(Xtrain, edad_menarquia = ytrain),
+                    method = "kernelpls", validation = "CV")
+
+# Resumen del modelo
+summary(modelo_kpls)
+
+# Predicción
+preds_kpls <- predict(modelo_kpls, newdata = Xtest, ncomp = 2)
+
+# Gráfico Observado vs Predicho
+plot(ytest, preds_kpls, main = "Kernel PLS: Observado vs Predicho",
+     xlab = "Observado", ylab = "Predicho")
+
+RMSE <- sqrt(mean((ytest - preds_kpls)^2))
+R2 <- cor(ytest, preds_kpls)^2
+MAE <- mean(abs(ytest - preds_kpls))
+n <- length(ytest)
+p <- 2  # número de componentes del modelo
+r2 <- cor(ytest, preds_kpls)^2
+r2_adj <- 1 - ((1 - r2) * (n - 1)) / (n - p - 1)
+cat("RMSE:", RMSE, "\n")
+cat("MAE:", MAE, "\n")
+cat("R²:", R2, "\n")
+cat("R² ajustado:", r2_adj, "\n")
+```
+```{r}
+df_rbf = read.csv("C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/PLS_K-PLS/train_rbf.csv")
+df_lap = read.csv("C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/PLS_K-PLS/train_laplacian.csv")
+df_pol = read.csv("C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/PLS_K-PLS/train_poly.csv")
+df_sig = read.csv("C:/Users/kiril/Documentos/CienciaDatos3/PROYIII/pregnancy/PLS_K-PLS/train_sigmoid.csv")
+
+X_rbf = subset(df_rbf, select = -y)
+y_rbf = df_rbf$y
+
+X_lap = subset(df_lap, select = -y)
+y_lap = df_lap$y
+
+X_pol = subset(df_pol, select = -y)
+y_pol = df_pol$y
+
+X_sig = subset(df_sig, select = -y)
+y_sig = df_sig$y
+```
+
+```{r}
+maxNC = min(dim(X_rbf)); maxNC
+```
+
+```{r}
+myplsC = opls(x = X_rbf, y = y_rbf, predI = maxNC, crossvalI = 10, 
+              scaleC = "none", fig.pdfC = "none")
+```
+
+```{r}
+myplsC = opls(x = X_lap, y = y_lap, predI = maxNC, crossvalI = 10, 
+              scaleC = "none", fig.pdfC = "none")
+```
+
+```{r}
+myplsC = opls(x = X_pol, y = y_pol, predI = maxNC, crossvalI = 10, 
+              scaleC = "none", fig.pdfC = "none")
+```
+
+```{r}
+myplsC = opls(x = X_sig, y = y_sig, predI = maxNC, crossvalI = 10, 
+              scaleC = "none", fig.pdfC = "none")
+```
+
